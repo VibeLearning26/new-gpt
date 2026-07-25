@@ -10,30 +10,33 @@ on:
     paths:
       - 'apps/mobile/**'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./apps/mobile
+        working-directory: apps/mobile
 
     steps:
-    - uses: actions/checkout@v4
-    
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
     - name: Set up Flutter
-      uses: subosito/flutter-action@v2
+      uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046 # v2.19.0
       with:
         flutter-version: '3.x'
         channel: 'stable'
-        
+
     - name: Install dependencies
       run: flutter pub get
-      
+
     - name: Analyze
       run: flutter analyze
-      
+
     - name: Run tests
       run: flutter test
-      
+
     - name: Build APK
       run: flutter build apk --release

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
@@ -43,6 +43,13 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # TOTP multi-factor authentication (required for privileged roles).
+    # mfa_secret holds a Fernet-encrypted base32 secret; recovery codes are
+    # stored as SHA-256 hashes, one-time use.
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mfa_secret: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    mfa_recovery_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(

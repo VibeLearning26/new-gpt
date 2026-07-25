@@ -87,5 +87,9 @@ def require_role(*roles: UserRole):
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_role(UserRole.SUPER_ADMIN, UserRole.ADMIN))]
 SuperAdminUser = Annotated[User, Depends(require_role(UserRole.SUPER_ADMIN))]
-StudentUser = Annotated[User, Depends(require_role(UserRole.STUDENT))]
+# Admins keep the full student experience (chat, models, sessions) so the
+# admin "Student view" works exactly like the student login.
+StudentUser = Annotated[
+    User, Depends(require_role(UserRole.STUDENT, UserRole.ADMIN, UserRole.SUPER_ADMIN))
+]
 DbSession = Annotated[AsyncSession, Depends(get_db)]

@@ -1,294 +1,272 @@
-# VibeGPT — Complete Local Setup Guide (Windows)
+# VibeGPT — Complete Setup Guide (Windows)
 
-> **How to use this document:** This is a complete, step-by-step guide to get the
-> VibeGPT website running locally from a fresh clone. You can either follow it
-> yourself **or paste the whole thing into an AI coding assistant** (Kilo, Claude,
-> Cursor, etc.) and ask it to execute the steps for you. Every command is exact and
-> tested. Do the steps **in order** — later steps depend on earlier ones.
+> **How to use this document:** a step-by-step guide to run VibeGPT locally from a
+> fresh clone. Follow it yourself or paste it into an AI coding assistant and ask
+> it to execute the steps. Commands are exact. Do the steps **in order** — later
+> steps depend on earlier ones.
 
 ---
 
 ## 🎯 Goal
 
-Get these four things running on your machine:
+Get these running on your machine:
 
-1. **PostgreSQL + pgvector** (database) — via Docker
-2. **Ollama** (local LLM for AI answers) — via Docker
-3. **FastAPI backend** (port 8000) + **document worker** — Python
-4. **Next.js frontend** (port 3000) — Node.js
+1. **PostgreSQL + pgvector** (database) — Docker
+2. **Ollama** (local LLM) — Docker *(optional if you use the gateway)*
+3. **OmniRoute** (LLM gateway — MiMo & free models) — npm *(optional if you use Ollama)*
+4. **FastAPI backend** (port 8000) + **document worker** — Python
+5. **Next.js frontend** (port 3000) — Node.js
 
-When done, you open **http://localhost:3000** and log in.
+When done: open **http://localhost:3000**, log in, and start studying.
 
 ---
 
-## 📋 Prerequisites (install these first)
+## 📋 Prerequisites
 
 | Tool | Version | Notes |
 |------|---------|-------|
 | **Git** | any | https://git-scm.com |
-| **Python** | **3.11, 3.12, or 3.13** | ⚠️ **NOT 3.14** — `pydantic-core` fails to build on 3.14. Check with `python --version`. If you have 3.14, install 3.12 from https://python.org and use the `py -3.12` launcher. |
-| **Node.js** | 20+ | https://nodejs.org (LTS) |
-| **Docker Desktop** | latest | https://docker.com/products/docker-desktop — enable the **WSL 2 backend** during install. |
-
-Verify before continuing:
-
-```powershell
-git --version
-python --version       # must be 3.11–3.13
-node --version         # must be 20+
-docker --version
-```
+| **Python** | **3.11–3.13** | ⚠️ **NOT 3.14** (`pydantic-core` fails to build). Check: `python --version`. |
+| **Node.js** | **22.22+ or 24+** | https://nodejs.org — older 22.x triggers OmniRoute warnings; 24 LTS recommended. |
+| **Docker Desktop** | any recent | https://docker.com — needed for Postgres + Ollama. |
 
 ---
 
-## Step 1 — Clone the repository
+## 1. Clone the repository
 
 ```powershell
 git clone https://github.com/VibeLearning26/new-gpt.git VibeGPT
 cd VibeGPT
 ```
 
-> If you already have a clone, update it instead:
-> ```powershell
-> cd VibeGPT
-> git pull origin main
-> ```
+Repo layout:
+
+```
+VibeGPT/
+├── apps/web/            # Next.js 16 + React 19 + Tailwind v4 (port 3000)
+├── apps/mobile/         # Flutter app (optional)
+├── services/api/        # FastAPI + SQLAlchemy + Alembic + pgvector (port 8000)
+├── infrastructure/      # docker-compose files, Caddyfile, SQL scripts
+└── docs/                # security.md, vps-hardening.md
+```
 
 ---
 
-## Step 2 — Configure the environment file
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Open `.env` and change **these two values** (the rest are fine as-is for local dev):
-
-```env
-# Set a random secret (any long random string works for local dev)
-JWT_SECRET_KEY=paste-a-long-random-string-here
-
-# Set the admin password you want to use
-INITIAL_ADMIN_PASSWORD=admin123
-```
-
-Leave these as they are (they point at the local Docker services):
-
-```env
-DATABASE_URL=postgresql+asyncpg://vibegpt:vibegpt_dev_password@localhost:5432/vibegpt
-OLLAMA_BASE_URL=http://localhost:11434
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_DEMO_MODE=false
-```
-
-> ⚠️ **Never commit `.env`.** It is git-ignored.
-
----
-
-## Step 3 — Start the database and Ollama (Docker)
-
-Make sure **Docker Desktop is open and the engine is running** (green icon).
+## 2. Start the infrastructure (Postgres + Ollama)
 
 ```powershell
 cd infrastructure
-docker compose --env-file ../.env up postgres ollama -d
+docker compose up -d postgres ollama ollama-init
 cd ..
 ```
 
-Wait until both are healthy:
+- Postgres: `localhost:5432` (db `vibegpt`, user `vibegpt`, password `vibegpt_dev_password`)
+- Ollama: `localhost:11434`, pulls `llama3.2:3b` automatically
+- Ports are bound to **127.0.0.1 only** — never exposed to your LAN.
+
+Verify:
 
 ```powershell
-docker ps
-# Look for: vibegpt-postgres  (healthy)  and  vibegpt-ollama
+docker ps                                   # both containers healthy
 ```
 
 ---
 
-## Step 4 — Pull the LLM model (first time only)
-
-```powershell
-docker exec vibegpt-ollama ollama pull llama3.2:3b
-```
-
-This downloads ~2 GB. Wait for it to finish. (AI answers won't work without it,
-but the rest of the site will.)
-
----
-
-## Step 5 — Backend setup (Python)
+## 3. Backend (FastAPI + worker)
 
 ```powershell
 cd services/api
 
-# Create a virtual environment with a supported Python (use 3.12 if 3.14 is default)
-py -3.12 -m venv .venv
-# (or: python -m venv .venv   if your default python is already 3.11–3.13)
+# Virtual environment
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
-.venv\Scripts\activate
-
-pip install --upgrade pip
+# Dependencies (CPU-only torch is pinned — no CUDA download)
 pip install -r requirements.txt
+
+# Environment file
+copy .env.example .env
 ```
 
-> This installs torch + sentence-transformers and can take a few minutes.
+Edit `services/api/.env` — the defaults work for local Ollama. Key settings:
 
-### 5a. Create the database schema
+```dotenv
+APP_ENV=development
+DATABASE_URL=postgresql+asyncpg://vibegpt:vibegpt_dev_password@localhost:5432/vibegpt
+JWT_SECRET_KEY=<generate a random 64-char string for anything beyond local play>
+
+# LLM: "ollama" (local) or "router" (OmniRoute gateway — step 3b)
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+```
+
+Migrate + run:
 
 ```powershell
-alembic upgrade head
+# Database migrations
+python -m alembic upgrade head
+
+# API (keep this terminal open)
+python -m uvicorn app.main:app --port 8000
 ```
 
-### 5b. Seed the academic curriculum (departments, semesters, subjects)
-
-The backend auto-creates the admin + student accounts and semesters on first
-start, but the **subjects** come from the curriculum seed script:
+In a **second terminal** (same folder, venv activated) — the document indexer:
 
 ```powershell
-python -m scripts.seed_curriculum
+python -m app.workers.document_worker
 ```
 
-Expected output ends with: `Done: 9 departments, 561 subjects created.`
+Verify: http://localhost:8000/api/v1/health → `{"status":"ok"}` (approx.).
 
-> This script is idempotent — safe to re-run; it clears and rebuilds the
-> departments/subjects each time.
+### 3b. Optional: OmniRoute gateway (Xiaomi MiMo + free models)
+
+Use this instead of (or alongside) local Ollama for stronger models.
+
+```powershell
+npm install -g omniroute
+omniroute serve
+```
+
+1. Open **http://localhost:20128/dashboard** and add your upstream provider keys
+   (OpenCode free models, Xiaomi MiMo, etc.).
+2. In `services/api/.env`:
+
+   ```dotenv
+   LLM_PROVIDER=router
+   ROUTER_BASE_URL=http://localhost:20128/v1
+   ROUTER_API_KEY=                      # only if your gateway requires auth
+   ROUTER_DEFAULT_MODEL=opencode-zen/mimo-v2.5-free
+   ROUTER_DASHBOARD_URL=http://localhost:20128/dashboard
+   # Comma-separated allowlist shown in the student model switcher:
+   ROUTER_ALLOWED_MODELS=opencode-zen/big-pickle,opencode-zen/deepseek-v4-flash-free,opencode-zen/laguna-s-2.1-free,opencode-zen/ling-3.0-flash-free,opencode-zen/mimo-v2.5-free,opencode-zen/nemotron-3-ultra-free,opencode-zen/north-mini-code-free
+   ```
+
+3. Restart the API. Students can now switch models from the chat header.
+
+**Troubleshooting OmniRoute:**
+- `better-sqlite3 ... NODE_MODULE_VERSION` error after a Node upgrade →
+  `omniroute runtime repair`
+- It exits immediately from background shells — run it in its own terminal
+  (or `omniroute serve --daemon`).
 
 ---
 
-## Step 6 — Frontend setup (Node.js)
+## 4. Frontend (Next.js)
+
+In a **third terminal**:
 
 ```powershell
 cd apps/web
 npm install
-cd ..\..
-```
-
----
-
-## Step 7 — Run the app (three terminals)
-
-You need **three separate terminal windows**, all running at the same time.
-
-**Terminal 1 — Backend API (port 8000):**
-```powershell
-cd services/api
-.venv\Scripts\activate
-uvicorn app.main:app --port 8000
-```
-Leave it running. You should see `Application startup complete`.
-
-**Terminal 2 — Document worker (indexes uploaded files):**
-```powershell
-cd services/api
-.venv\Scripts\activate
-python -m app.workers.document_worker
-```
-Leave it running. You should see `Document worker started (poll_interval=10s...)`.
-
-> ⚠️ **The worker is required.** Uploads stay stuck at "processing" forever if
-> the worker isn't running.
-
-**Terminal 3 — Frontend (port 3000):**
-```powershell
-cd apps/web
 npm run dev
 ```
-Leave it running. You should see `✓ Ready` and `Local: http://localhost:3000`.
+
+Open **http://localhost:3000**.
+
+> If every route 404s after pulling new code: delete `apps/web/.next` and restart
+> `npm run dev`.
 
 ---
 
-## Step 8 — Open and log in
-
-Go to **http://localhost:3000**
+## 5. Log in
 
 | Role | Email | Password |
 |------|-------|----------|
-| **Admin** | `admin@vibegpt.local` | whatever you set as `INITIAL_ADMIN_PASSWORD` in `.env` (e.g. `admin123`) |
-| **Student** | `student@vibegpt.local` | `student123` |
+| Admin | `admin@vibegpt.local` | `admin123` |
+| Student | `student@vibegpt.local` | `student123` |
 
-✅ If you can log in and see the dashboard, the setup is complete.
+These are **development** accounts created on first startup. For any shared or
+production deployment: set `APP_ENV=production` (the API then refuses default
+secrets), change `INITIAL_ADMIN_PASSWORD` before first boot, and enable admin
+2FA at **Admin → Security**.
 
 ---
 
-## 🔧 Troubleshooting
+## 6. Using the app
 
-### "Python 3.14" / `pydantic-core` build error
-Your Python is too new. Install Python 3.12 and recreate the venv:
+### As admin
+1. **Departments / Subjects** — create the academic structure (9 departments,
+   8 semesters and 561 real 2024 course codes are pre-seeded).
+2. **Documents** — upload PDF/PPTX/DOCX/XLSX (≤20 MB) into a subject. The worker
+   extracts → chunks → embeds them; **publish** when ready.
+3. **Answer format** — tune mark-based rules (2/3/5/8/10 marks word windows).
+4. **Analytics** — live usage, tokens, performance charts.
+5. **Router** — gateway status + dashboard link (when `LLM_PROVIDER=router`).
+6. **Feedback** — student reports; reply, resolve, delete.
+7. **Security** — admin TOTP 2FA enrollment + sign-out-all-devices.
+
+### As student
+1. **Subjects** — shows subjects that have published material; view/download
+   files; filters by semester/department.
+2. **Chat** — pick subject, marks (presets or custom 1–20) and model; answers are
+   grounded in the subject's documents with `[S1]…` citations, or general
+   knowledge when no material matches. Conversations persist as sessions in the
+   sidebar (rename/delete/reopen). Rate or report any answer via **Feedback**.
+
+---
+
+## 7. Tests & checks
+
 ```powershell
-Remove-Item -Recurse -Force .venv
-py -3.12 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+# Backend (services/api, venv active)
+ruff check .
+pytest
+
+# Frontend (apps/web)
+npx tsc --noEmit
+npm run lint
 ```
 
-### Docker Desktop won't open
-1. Make sure WSL 2 is installed: `wsl --update` then `wsl --shutdown` (run in an **Admin** PowerShell).
-2. Delete stale lock files, then reopen Docker Desktop:
-   ```powershell
-   Remove-Item "$env:LOCALAPPDATA\Docker\*.lock" -Force
+---
+
+## 8. Production deployment (Oracle Cloud VPS)
+
+Full details in `docs/vps-hardening.md` and `docs/security.md`. Summary:
+
+1. Copy the repo to the VPS; create `/opt/vibegpt/.env` from
+   `infrastructure/oracle.env.example` (**chmod 600**, every placeholder replaced,
+   `APP_ENV=production`).
+2. Point a **domain** at the VPS IP (automatic HTTPS needs a real domain — raw IPs
+   cannot get public certificates).
+3. Deploy:
+
+   ```bash
+   # With local Postgres:
+   docker compose -f infrastructure/docker-compose.prod.yml up -d --build
+   # With Supabase-hosted DB/storage:
+   docker compose -f infrastructure/docker-compose.oracle.yml up -d --build
    ```
-3. If it still crashes, reinstall Docker Desktop (your project files are safe — they live in your `VibeGPT` folder, not in Docker).
 
-### "There is not enough space on the disk" (Docker)
-Your **C: drive is nearly full**. Free up space:
-```powershell
-npm cache clean --force          # clears the npm cache (often several GB)
-pip cache purge                  # clears the pip cache
-```
-Then restart Docker Desktop. Also check Docker Desktop → Settings → Resources for the virtual disk size.
-
-### Frontend loads but every page is 404 (or `/` is 404)
-This is a stale Turbopack cache. Clear it and restart the frontend:
-```powershell
-# stop the frontend (Ctrl+C in its terminal), then:
-cd apps/web
-Remove-Item .next -Recurse -Force
-npm run dev
-```
-
-### "Failed to fetch" in the browser
-The **backend API isn't running** (or crashed). Make sure Terminal 1 (uvicorn on
-port 8000) is running. Test it:
-```powershell
-curl http://localhost:8000/api/v1/health     # should return ok / 200
-```
-
-### Uploads stuck at "processing"
-The **document worker** (Terminal 2) isn't running. Start it:
-```powershell
-cd services/api
-.venv\Scripts\activate
-python -m app.workers.document_worker
-```
-
-### Login fails / "invalid credentials"
-- The admin account is created on the **first backend startup** using
-  `INITIAL_ADMIN_EMAIL` / `INITIAL_ADMIN_PASSWORD` from `.env`. If you changed the
-  password *after* the first run, the DB still has the old one. Either reset the DB
-  (drop and recreate the `vibegpt` database, then restart the backend) or use the
-  password that was set on first run.
-- Student login is always `student@vibegpt.local` / `student123`.
-
-### No subjects show up
-Run the curriculum seed (Step 5b):
-```powershell
-cd services/api
-.venv\Scripts\activate
-python -m scripts.seed_curriculum
-```
+4. Only Caddy publishes 80/443; API/web/Ollama are internal-only. Containers run
+   with dropped capabilities, no-new-privileges, PID and memory limits.
+5. Restrict the Oracle Cloud Security List to 22 (your IP only), 80, 443; harden
+   SSH (key-only, no root) per `docs/vps-hardening.md`.
+6. Backups: `infrastructure/scripts/backup.sh` (pg_dump + uploads, 14 retained) —
+   copy off-host; test restores with `restore.sh`.
+7. Supabase users: apply `infrastructure/supabase-rls.sql` (deny-by-default RLS +
+   private storage bucket). Least-privilege DB roles: `infrastructure/db-roles.sql`.
 
 ---
 
-## ✅ Final checklist
+## 9. Troubleshooting
 
-- [ ] Python 3.11–3.13 (not 3.14)
-- [ ] `.env` created with a `JWT_SECRET_KEY` and `INITIAL_ADMIN_PASSWORD`
-- [ ] Docker: `vibegpt-postgres` (healthy) + `vibegpt-ollama` running
-- [ ] `ollama pull llama3.2:3b` done
-- [ ] `pip install -r requirements.txt` done in `services/api/.venv`
-- [ ] `alembic upgrade head` done
-- [ ] `python -m scripts.seed_curriculum` done (9 departments, 561 subjects)
-- [ ] `npm install` done in `apps/web`
-- [ ] Terminal 1: API on 8000 — running
-- [ ] Terminal 2: document worker — running
-- [ ] Terminal 3: frontend on 3000 — running
-- [ ] http://localhost:3000 loads and you can log in
+| Symptom | Fix |
+|---|---|
+| Frontend 404s on all routes | Delete `apps/web/.next`, restart `npm run dev` |
+| `EADDRINUSE` / port busy | Old process still holds the port: `Get-NetTCPConnection -LocalPort 8000` → `Stop-Process -Id <pid>` |
+| Login fails after pulling auth changes | Tokens now carry issuer/audience — just log in again (old tokens are rejected by design) |
+| `JWT_SECRET_KEY` warning | Set a real random secret in `.env` (required in production) |
+| Answers are slow | CPU inference is ~5–10 tok/s; use the OmniRoute gateway for faster models |
+| OmniRoute `NODE_MODULE_VERSION` error | `omniroute runtime repair` |
+| Postgres/Ollama unreachable from LAN | Intentional — dev ports bind 127.0.0.1 only; use the production topology for remote access |
+| Demo data in DB | `student@vibegpt.local/student123` exists only when `APP_ENV=development`; never promote that database to production |
+
+---
+
+## 10. Git workflow
+
+- `origin` = VibeGPT.git (archive — **do not push**)
+- `new-origin` = new-gpt (shared repo — push here, only when asked)
+- CI runs ruff + pytest (API), lint + build (web), analyze + build (mobile),
+  plus CodeQL and Dependabot.

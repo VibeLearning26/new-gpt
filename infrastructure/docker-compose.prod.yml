@@ -1,18 +1,41 @@
 # VibeGPT – Production Docker Compose
 # Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# SECURITY TOPOLOGY:
+#   - Only Caddy publishes 80/443; every other service is internal-only.
+#   - Containers drop all capabilities, enable no-new-privileges, and carry
+#     PID + memory limits sized for a ~1 OCPU / 6 GB VPS (plus 2 GB swap —
+#     see docs/vps-hardening.md). Tune mem_limit values to your hardware.
+#   - Ollama is reachable only from the private Docker network.
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
   # ── Caddy Reverse Proxy ────────────────────────────────────
   caddy:
+    <<: *hardened
     image: caddy:2-alpine
     container_name: vibegpt-caddy
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp" # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 100
+    mem_limit: 192m
     depends_on:
       - api
       - web
@@ -22,6 +45,7 @@ services:
 
   # ── Next.js Web App ────────────────────────────────────────
   web:
+    <<: *hardened
     build:
       context: ../apps/web
       dockerfile: Dockerfile
@@ -32,12 +56,15 @@ services:
       NEXT_PUBLIC_API_URL: /api/v1
     expose:
       - "3000"
+    pids_limit: 100
+    mem_limit: 512m
     restart: unless-stopped
     networks:
       - vibegpt
 
   # ── FastAPI Backend ────────────────────────────────────────
   api:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -51,6 +78,8 @@ services:
       - "8000"
     volumes:
       - uploads:/app/uploads
+    pids_limit: 256
+    mem_limit: 1536m
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,6 +97,7 @@ services:
 
   # ── Document Worker ────────────────────────────────────────
   worker:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -79,6 +109,8 @@ services:
       APP_ENV: production
     volumes:
       - uploads:/app/uploads
+    pids_limit: 256
+    mem_limit: 1536m
     depends_on:
       api:
         condition: service_healthy
@@ -89,6 +121,7 @@ services:
 
   # ── PostgreSQL + pgvector ──────────────────────────────────
   postgres:
+    <<: *hardened
     image: pgvector/pgvector:pg16
     container_name: vibegpt-postgres
     environment:
@@ -97,6 +130,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    pids_limit: 256
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -106,12 +141,16 @@ services:
     networks:
       - vibegpt
 
-  # ── Ollama LLM ────────────────────────────────────────────
+  # ── Ollama LLM (private network only — never published) ────
   ollama:
+    <<: *hardened
+    # Pin to a tested release before production rollout (e.g. ollama/ollama:0.9.x).
     image: ollama/ollama:latest
     container_name: vibegpt-ollama
     volumes:
       - ollama_data:/root/.ollama
+    pids_limit: 128
+    mem_limit: 2560m
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -122,12 +161,15 @@ services:
       - vibegpt
 
   ollama-init:
+    <<: *hardened
     image: ollama/ollama:latest
     container_name: vibegpt-ollama-init
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/ollama"]
     command: ["pull", "${OLLAMA_MODEL:-llama3.2:3b}"]
+    pids_limit: 64
+    mem_limit: 512m
     depends_on:
       ollama:
         condition: service_healthy

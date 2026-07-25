@@ -20,6 +20,13 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
+    connect_args={
+        "server_settings": {
+            # Guard against runaway queries and stuck transactions.
+            "statement_timeout": "30000",  # ms
+            "idle_in_transaction_session_timeout": "60000",  # ms
+        }
+    },
 )
 
 async_session_factory = async_sessionmaker(

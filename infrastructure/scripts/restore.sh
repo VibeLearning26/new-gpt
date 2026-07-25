@@ -1,37 +1,27 @@
-#!/bin/bash
-# VibeGPT – PostgreSQL Restore Script
-# Usage: ./restore.sh <backup_file.sql.gz>
-
+#!/usr/bin/env bash
+# VibeGPT – Restore drill (TEST your backups regularly).
+#
+#   ./infrastructure/scripts/restore.sh <path-to-dump>
+#
+# Restores into a THROWAWAY database (vibegpt_restore) so production is
+# never touched. Verify row counts, then drop the throwaway DB.
 set -euo pipefail
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <backup_file.sql.gz>"
-    echo ""
-    echo "Available backups:"
-    ls -lh "${BACKUP_DIR:-/opt/vibegpt/backups}"/vibegpt_*.sql.gz 2>/dev/null || echo "  No backups found"
-    exit 1
-fi
+DUMP="${1:?usage: restore.sh <path-to-dump>}"
+CONTAINER="${POSTGRES_CONTAINER:-vibegpt-postgres}"
+DB_USER="${POSTGRES_USER:-vibegpt}"
 
-BACKUP_FILE="$1"
+echo "→ Preparing throwaway database vibegpt_restore"
+docker exec "$CONTAINER" psql -U "$DB_USER" -d postgres -c "DROP DATABASE IF EXISTS vibegpt_restore;"
+docker exec "$CONTAINER" psql -U "$DB_USER" -d postgres -c "CREATE DATABASE vibegpt_restore;"
+docker exec "$CONTAINER" psql -U "$DB_USER" -d vibegpt_restore -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-if [ ! -f "$BACKUP_FILE" ]; then
-    echo "Error: Backup file not found: $BACKUP_FILE"
-    exit 1
-fi
+echo "→ Restoring $DUMP"
+docker exec -i "$CONTAINER" pg_restore -U "$DB_USER" -d vibegpt_restore --no-owner < "$DUMP"
 
-echo "WARNING: This will restore the database from: $BACKUP_FILE"
-echo "All current data will be OVERWRITTEN."
-read -p "Are you sure? (yes/no): " confirm
+echo "→ Sanity counts"
+docker exec "$CONTAINER" psql -U "$DB_USER" -d vibegpt_restore \
+  -c "SELECT 'users' t, count(*) FROM users UNION ALL SELECT 'documents', count(*) FROM documents UNION ALL SELECT 'document_chunks', count(*) FROM document_chunks UNION ALL SELECT 'question_logs', count(*) FROM question_logs;"
 
-if [ "$confirm" != "yes" ]; then
-    echo "Restore cancelled."
-    exit 0
-fi
-
-echo "[$(date)] Restoring from $BACKUP_FILE..."
-
-gunzip -c "$BACKUP_FILE" | docker exec -i vibegpt-postgres psql \
-    -U "${POSTGRES_USER:-vibegpt}" \
-    -d "${POSTGRES_DB:-vibegpt}"
-
-echo "[$(date)] Restore complete"
+echo "✓ Restore drill succeeded. Drop with:"
+echo "  docker exec $CONTAINER psql -U $DB_USER -d postgres -c 'DROP DATABASE vibegpt_restore;'"

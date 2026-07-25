@@ -7,10 +7,13 @@ FastAPI application entry point.
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -65,14 +68,53 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS
+    # CORS — explicit origins only (never "*") with credentials; methods and
+    # headers restricted to what the app actually uses.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
+
+    # Global request-body cap (defense against memory-exhaustion uploads).
+    max_body_bytes = settings.MAX_REQUEST_BODY_MB * 1024 * 1024
+
+    @app.middleware("http")
+    async def enforce_body_limit(request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > max_body_bytes:
+                    return JSONResponse(
+                        status_code=413, content={"detail": "Request body too large"}
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400, content={"detail": "Invalid Content-Length"}
+                )
+        return await call_next(request)
+
+    # Correlation IDs + security-event audit logging (401/403/429).
+    request_id_re = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+    @app.middleware("http")
+    async def security_context(request: Request, call_next):
+        raw_id = request.headers.get("x-request-id") or ""
+        request_id = raw_id if request_id_re.match(raw_id) else uuid.uuid4().hex[:16]
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        if response.status_code in (401, 403, 429):
+            client = request.client.host if request.client else "?"
+            logger.warning(
+                "security_event status=%s path=%s client=%s request_id=%s",
+                response.status_code,
+                request.url.path,
+                client,
+                request_id,
+            )
+        return response
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

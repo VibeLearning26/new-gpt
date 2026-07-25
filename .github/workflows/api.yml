@@ -10,6 +10,9 @@ on:
     paths:
       - 'services/api/**'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,24 +21,24 @@ jobs:
         working-directory: ./services/api
 
     steps:
-    - uses: actions/checkout@v4
-    
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
       with:
         python-version: '3.11'
         cache: 'pip'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pytest pytest-asyncio httpx ruff
-        
+
     - name: Lint with Ruff
       run: |
         ruff check .
-        
+
     - name: Test with pytest
       run: |
         pytest

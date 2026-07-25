@@ -18,6 +18,12 @@ from app.core.config import get_settings
 # Argon2 password hashing context
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
+# JWT issuer/audience — bound into every token and verified on decode so
+# tokens minted for another service (or another VibeGPT environment sharing
+# a key) are rejected.
+TOKEN_ISSUER = "vibegpt"
+TOKEN_AUDIENCE = "vibegpt"
+
 
 def hash_password(password: str) -> str:
     """Hash a password using Argon2."""
@@ -43,6 +49,8 @@ def create_access_token(
         "sub": subject,
         "role": role,
         "type": "access",
+        "iss": TOKEN_ISSUER,
+        "aud": TOKEN_AUDIENCE,
         "iat": now,
         "exp": expire,
         "jti": str(uuid.uuid4()),
@@ -66,6 +74,8 @@ def create_refresh_token(subject: str) -> tuple[str, str, datetime]:
     payload = {
         "sub": subject,
         "type": "refresh",
+        "iss": TOKEN_ISSUER,
+        "aud": TOKEN_AUDIENCE,
         "iat": now,
         "exp": expire,
         "jti": token_id,
@@ -76,9 +86,18 @@ def create_refresh_token(subject: str) -> tuple[str, str, datetime]:
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    """Decode and validate a JWT token. Raises JWTError on failure."""
+    """Decode and validate a JWT token. Raises JWTError on failure.
+
+    Enforces signature, expiry, issuer and audience.
+    """
     settings = get_settings()
-    return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    return jwt.decode(
+        token,
+        settings.JWT_SECRET_KEY,
+        algorithms=[settings.JWT_ALGORITHM],
+        audience=TOKEN_AUDIENCE,
+        issuer=TOKEN_ISSUER,
+    )
 
 
 def validate_password_strength(password: str) -> list[str]:

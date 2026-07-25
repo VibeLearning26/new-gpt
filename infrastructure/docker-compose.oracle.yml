@@ -1,11 +1,61 @@
 name: vibegpt
 
+# VibeGPT – Oracle Cloud VPS deployment (external Supabase DB + storage).
+#
+# SECURITY TOPOLOGY:
+#   - Only Caddy publishes ports (80/443). API and web are internal-only.
+#   - Ollama has no published ports; only the API/worker can reach it.
+#   - Containers drop all capabilities, enable no-new-privileges, and carry
+#     PID + memory limits sized for ~1 OCPU / 6 GB (no local Postgres here —
+#     the DB is Supabase-hosted, which frees ~1 GB for the app tier).
+#   - HTTPS: point a real DOMAIN at the VPS public IP and set DOMAIN in .env —
+#     Caddy obtains certificates automatically. Automatic public certificates
+#     DO NOT work for a raw IP address; if you must run HTTP-only, restrict
+#     ingress via Oracle Cloud Security Lists to trusted networks.
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
+  caddy:
+    <<: *hardened
+    image: caddy:2-alpine
+    container_name: vibegpt-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 100
+    mem_limit: 192m
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
   ollama:
+    <<: *hardened
+    # Pin to a tested release before production rollout (e.g. ollama/ollama:0.9.x).
     image: ollama/ollama:latest
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
+    pids_limit: 128
+    mem_limit: 2560m
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -13,17 +63,21 @@ services:
       retries: 5
 
   ollama-init:
+    <<: *hardened
     image: ollama/ollama:latest
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/ollama"]
     command: ["pull", "${OLLAMA_MODEL:-llama3.2:3b}"]
+    pids_limit: 64
+    mem_limit: 512m
     depends_on:
       ollama:
         condition: service_healthy
     restart: "no"
 
   api:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -32,8 +86,9 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       PYTHONPATH: /app
       STORAGE_BACKEND: supabase
-    ports:
-      - "8000:8000"
+      APP_ENV: production
+    expose:
+      - "8000"
     depends_on:
       ollama-init:
         condition: service_completed_successfully
@@ -43,10 +98,13 @@ services:
       timeout: 5s
       retries: 6
       start_period: 60s
+    pids_limit: 256
+    mem_limit: 1792m
     restart: unless-stopped
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
 
   worker:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -55,24 +113,34 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       PYTHONPATH: /app
       STORAGE_BACKEND: supabase
+      APP_ENV: production
     depends_on:
       api:
         condition: service_healthy
+    pids_limit: 256
+    mem_limit: 1792m
     restart: unless-stopped
     command: python -m app.workers.document_worker
 
   web:
+    <<: *hardened
     build:
       context: ../apps/web
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL}
-    ports:
-      - "3000:3000"
+        NEXT_PUBLIC_API_URL: /api/v1
+    environment:
+      NEXT_PUBLIC_API_URL: /api/v1
+    expose:
+      - "3000"
     depends_on:
       api:
         condition: service_healthy
+    pids_limit: 100
+    mem_limit: 512m
     restart: unless-stopped
 
 volumes:
   ollama_data:
+  caddy_data:
+  caddy_config:
