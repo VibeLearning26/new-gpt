@@ -18,6 +18,10 @@ argon2-cffi==23.1.0
 slowapi==0.1.9
 
 # ── AI / RAG ─────────────────────────────────────────────────
+# The API embeds documents on CPU. Pin the official CPU wheel so Docker does
+# not download the CUDA/NVIDIA dependency chain (the LLM is provided by Ollama).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 sentence-transformers==4.1.0
 httpx==0.28.1
 
