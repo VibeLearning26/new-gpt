@@ -6,7 +6,7 @@ pydantic-settings==2.9.1
 python-multipart==0.0.20
 
 # ── Database ─────────────────────────────────────────────────
-sqlalchemy[asyncio]==2.0.41
+sqlalchemy[asyncio]==2.0.51
 asyncpg==0.31.0
 alembic==1.16.2
 pgvector==0.3.6
