@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, BookOpen, Check } from "reicon-react";
+import { useEffect, useMemo, useState } from "react";
+import { Plus, BookOpen, Check, ChevronDown } from "reicon-react";
 import { adminApi, type ApiSubject, type ApiSemester, type ApiDepartment, type ApiModule } from "@/lib/api";
 import { Dropdown } from "@/components/Dropdown";
 
@@ -17,6 +17,11 @@ export default function AdminSubjectsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [deleteInput, setDeleteInput] = useState<Record<string, string>>({});
   const [showDeleteModal, setShowDeleteModal] = useState<string | null>(null);
+
+  // Filtering state
+  const [filterDept, setFilterDept] = useState("all");
+  const [filterSem, setFilterSem] = useState("all");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   // Editing state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -55,6 +60,33 @@ export default function AdminSubjectsPage() {
         );
     }
   }, [showArchived, archivedSubjects.length]);
+
+  const deptById = useMemo(
+    () => new Map(departments.map((d) => [d.id, d])),
+    [departments],
+  );
+
+  const filtered = useMemo(
+    () =>
+      subjects.filter(
+        (s) =>
+          (filterDept === "all" || s.department_id === filterDept) &&
+          (filterSem === "all" || s.semester_id === filterSem),
+      ),
+    [subjects, filterDept, filterSem],
+  );
+
+  const groups = useMemo(() => {
+    const sortedSems = [...semesters].sort((a, b) => a.number - b.number);
+    return sortedSems
+      .map((sem) => ({ sem, items: filtered.filter((s) => s.semester_id === sem.id) }))
+      .filter((g) => g.items.length > 0);
+  }, [filtered, semesters]);
+
+  const clearFilters = () => {
+    setFilterDept("all");
+    setFilterSem("all");
+  };
 
   const saveTick = () => {
     setSavedTick(true);
@@ -266,83 +298,162 @@ export default function AdminSubjectsPage() {
         </div>
       )}
 
-      <div className="space-y-4">
-        {subjects.map((s) => {
-          const sem = semesters.find(sem => sem.id === s.semester_id);
-          return (
-            <div key={s.id} className="card card-hover p-5 fade-up">
-              <div className="flex items-start gap-3 mb-4">
-                <div className="w-11 h-11 rounded-xl bg-panel-2 border border-line flex items-center justify-center text-brand-accent">
-                  <BookOpen size={20} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h2 className="font-semibold truncate">{s.name}</h2>
-                    <span className="badge badge-neutral">{s.code}</span>
-                    {sem && <span className="badge badge-red">{semLabel(sem)}</span>}
-                  </div>
-                </div>
-                <button
-                  onClick={() => openEditor(s.id)}
-                  className="btn-ghost"
-                >
-                  {editingId === s.id ? "Close" : "Edit"}
-                </button>
-                <button
-                  onClick={() => removeSubject(s.id)}
-                  className="btn-ghost text-err hover:bg-err/10"
-                >
-                  Archive
-                </button>
-              </div>
+      {/* Branch / semester filter bar */}
+      <div className="panel p-4 mb-6 sticky top-4 z-30 bg-panel/90 backdrop-blur">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[230px] flex-1">
+            <label className="field-label">Branch</label>
+            <Dropdown
+              ariaLabel="Filter by branch"
+              value={filterDept}
+              onChange={setFilterDept}
+              options={[
+                { value: "all", label: "All branches" },
+                ...departments.map((d) => ({ value: d.id, label: `${d.code} — ${d.name}` })),
+              ]}
+            />
+          </div>
+          <div className="min-w-[170px]">
+            <label className="field-label">Semester</label>
+            <Dropdown
+              ariaLabel="Filter by semester"
+              value={filterSem}
+              onChange={(v) => {
+                setFilterSem(v);
+                if (v !== "all") setExpanded((c) => ({ ...c, [v]: true }));
+              }}
+              options={[
+                { value: "all", label: "All semesters" },
+                ...[...semesters]
+                  .sort((a, b) => a.number - b.number)
+                  .map((s) => ({ value: s.id, label: semLabel(s) })),
+              ]}
+            />
+          </div>
+          <div className="flex items-center gap-2 ml-auto pb-0.5">
+            <span className="badge badge-red">
+              {filtered.length} subject{filtered.length === 1 ? "" : "s"}
+            </span>
+            {(filterDept !== "all" || filterSem !== "all") && (
+              <button onClick={clearFilters} className="btn-ghost text-xs">
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
 
-              {editingId === s.id && (
-                <div className="space-y-2 fade-in">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-faint mb-2">
-                    Modules
-                  </p>
-                  {editingModules.length === 0 && (
-                    <p className="text-xs text-muted mb-2">No modules yet.</p>
-                  )}
-                  {editingModules.map((m) => (
-                    <div
-                      key={m.id}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-panel-2 border border-line-soft"
-                    >
-                      <input
-                        className="flex-1 bg-transparent text-[13px] text-muted outline-none"
-                        value={m.name}
-                        onChange={(e) => updateModule(m.id, e.target.value)}
-                      />
-                      <button
-                        onClick={() => removeModule(m.id)}
-                        className="text-[11px] text-faint hover:text-err transition"
-                        title="Remove module"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      onClick={() => addModule(s.id)}
-                      className="btn-ghost inline-flex items-center gap-1.5"
-                    >
-                      <Plus size={14} /> Add module
-                    </button>
-                    <button onClick={saveModules} className="btn-primary ml-auto inline-flex items-center gap-1.5">
-                      {savedTick ? (
-                        <>
-                          <Check size={14} /> Saved
-                        </>
-                      ) : (
-                        "Save changes"
-                      )}
-                    </button>
-                  </div>
+      {groups.length === 0 && (
+        <div className="panel p-8 text-center text-sm text-muted">
+          No subjects match these filters.
+        </div>
+      )}
+
+      <div className="space-y-8">
+        {groups.map(({ sem, items }) => {
+          const isExpanded = expanded[sem.id];
+          return (
+            <section key={sem.id}>
+              <button
+                type="button"
+                onClick={() => setExpanded((c) => ({ ...c, [sem.id]: !c[sem.id] }))}
+                className="w-full flex items-center gap-2.5 mb-3 group"
+                aria-expanded={isExpanded}
+              >
+                <ChevronDown
+                  size={16}
+                  className={`text-brand-accent transition-transform duration-200 ${
+                    isExpanded ? "" : "-rotate-90"
+                  }`}
+                />
+                <h2 className="text-[13px] font-bold uppercase tracking-[0.15em]">{sem.name}</h2>
+                <span className="badge badge-neutral">{items.length}</span>
+                <span className="flex-1 h-px bg-line group-hover:bg-brand/50 transition-colors" />
+              </button>
+
+              {isExpanded && (
+                <div className="space-y-4">
+                  {items.map((s) => {
+                    const dept = deptById.get(s.department_id);
+                    return (
+                      <div key={s.id} className="card card-hover p-5 fade-up">
+                        <div className="flex items-start gap-3 mb-4">
+                          <div className="w-11 h-11 rounded-xl bg-panel-2 border border-line flex items-center justify-center text-brand-accent">
+                            <BookOpen size={20} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h2 className="font-semibold truncate">{s.name}</h2>
+                              <span className="badge badge-neutral">{s.code}</span>
+                              {dept && <span className="badge badge-red">{dept.code}</span>}
+                            </div>
+                          </div>
+                          <button onClick={() => openEditor(s.id)} className="btn-ghost">
+                            {editingId === s.id ? "Close" : "Edit"}
+                          </button>
+                          <button
+                            onClick={() => removeSubject(s.id)}
+                            className="btn-ghost text-err hover:bg-err/10"
+                          >
+                            Archive
+                          </button>
+                        </div>
+
+                        {editingId === s.id && (
+                          <div className="space-y-2 fade-in">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-faint mb-2">
+                              Modules
+                            </p>
+                            {editingModules.length === 0 && (
+                              <p className="text-xs text-muted mb-2">No modules yet.</p>
+                            )}
+                            {editingModules.map((m) => (
+                              <div
+                                key={m.id}
+                                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-panel-2 border border-line-soft"
+                              >
+                                <input
+                                  className="flex-1 bg-transparent text-[13px] text-muted outline-none"
+                                  value={m.name}
+                                  onChange={(e) => updateModule(m.id, e.target.value)}
+                                />
+                                <button
+                                  onClick={() => removeModule(m.id)}
+                                  className="text-[11px] text-faint hover:text-err transition"
+                                  title="Remove module"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+                            <div className="flex gap-2 mt-2">
+                              <button
+                                onClick={() => addModule(s.id)}
+                                className="btn-ghost inline-flex items-center gap-1.5"
+                              >
+                                <Plus size={14} /> Add module
+                              </button>
+                              <button
+                                onClick={saveModules}
+                                className="btn-primary ml-auto inline-flex items-center gap-1.5"
+                              >
+                                {savedTick ? (
+                                  <>
+                                    <Check size={14} /> Saved
+                                  </>
+                                ) : (
+                                  "Save changes"
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-            </div>
+            </section>
           );
         })}
       </div>
