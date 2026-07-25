@@ -265,6 +265,26 @@ body {
   box-shadow: 0 0 0 1px rgba(229, 9, 20, 0.3), 0 4px 16px -6px rgba(229, 9, 20, 0.5);
 }
 
+/* Inline custom-marks input (chat composer) */
+.marks-custom-input {
+  width: 58px;
+  padding: 6px 8px;
+  text-align: center;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-chip);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  box-shadow: 0 0 0 1px rgba(229, 9, 20, 0.3), 0 4px 16px -6px rgba(229, 9, 20, 0.5);
+  outline: none;
+  transition: box-shadow 0.15s ease;
+}
+.marks-custom-input:focus {
+  box-shadow: 0 0 0 2px rgba(229, 9, 20, 0.4), 0 4px 18px -6px rgba(229, 9, 20, 0.6);
+}
+
 /* ══════════════════════════════════════════════════════════════
    Dropdowns (custom select)
    ══════════════════════════════════════════════════════════════ */
@@ -542,6 +562,79 @@ body {
 
 /* ── Divider ───────────────────────────────────────────────── */
 .hr { height: 1px; background: var(--color-line); border: 0; }
+
+/* ══════════════════════════════════════════════════════════════
+   Analytics charts
+   ══════════════════════════════════════════════════════════════ */
+.chart-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  background: rgba(10, 10, 10, 0.92);
+  border: 1px solid rgba(229, 9, 20, 0.35);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.8), 0 0 16px -6px rgba(229, 9, 20, 0.35);
+  backdrop-filter: blur(6px);
+  animation: tooltipIn 0.14s ease both;
+  white-space: nowrap;
+}
+@keyframes tooltipIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chart-tooltip-value {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+}
+.chart-tooltip-label {
+  font-size: 10px;
+  color: var(--color-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-tooltip { animation: none; }
+}
+
+/* ── File actions (view / download) ────────────────────────── */
+.file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+  color: var(--color-faint);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.file-action:hover:not(:disabled) {
+  color: var(--color-brand-accent);
+  border-color: rgba(229, 9, 20, 0.4);
+  box-shadow: 0 0 12px -4px rgba(229, 9, 20, 0.5);
+}
+.file-action:active:not(:disabled) { transform: scale(0.92); }
+.file-action:disabled { opacity: 0.5; cursor: wait; }
+
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-line);
+  border-top-color: var(--color-brand-accent);
+  border-radius: 50%;
+  animation: spinSm 0.7s linear infinite;
+}
+@keyframes spinSm { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner-sm { animation-duration: 1.6s; }
+}
 
 /* ── Overlay (mobile sidebar) ──────────────────────────────── */
 .overlay {

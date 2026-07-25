@@ -13,9 +13,11 @@ GET  /api/v1/student/saved-answers
 GET  /api/v1/student/profile
 """
 
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import Response
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import selectinload
 
@@ -23,6 +25,7 @@ from app.core.dependencies import DbSession, StudentUser
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.core.rate_limit import limiter
 from app.models.academic import Module, StudentSubjectPermission, Subject
+from app.models.document import Document, DocumentStatus
 from app.models.question import Feedback, QuestionLog, QuestionSource, SavedAnswer
 from app.rag.generation import AnswerGenerationService
 from app.schemas.academic import ModuleResponse, SubjectResponse
@@ -36,13 +39,30 @@ from app.schemas.question import (
     SourceInfo,
     ValidationResult,
 )
+from app.storage import get_document_storage
 
 router = APIRouter(prefix="/student", tags=["Student"])
 
 
+def _published_subject_ids():
+    """Subjects that have at least one published, non-archived document."""
+    return (
+        select(Document.subject_id)
+        .where(
+            Document.status == DocumentStatus.PUBLISHED,
+            Document.archived_at.is_(None),
+        )
+        .distinct()
+    )
+
+
 def _subject_access_clause(current_user):
-    """Allow explicit grants or the student's assigned department/semester cohort."""
-    clauses = [StudentSubjectPermission.id.is_not(None)]
+    """Allow subjects with published material, explicit grants, or the
+    student's assigned department/semester cohort."""
+    clauses = [
+        Subject.id.in_(_published_subject_ids()),
+        StudentSubjectPermission.id.is_not(None),
+    ]
     if current_user.department_id is not None and current_user.semester_id is not None:
         clauses.append(
             and_(
@@ -83,9 +103,83 @@ async def _require_subject_access(subject_id: UUID, current_user, db: DbSession)
 @router.get("/subjects", response_model=list[SubjectResponse])
 async def get_student_subjects(current_user: StudentUser, db: DbSession):
     """Get subjects the student has access to."""
-    result = await db.execute(_accessible_subject_query(current_user).distinct())
-    subjects = result.scalars().all()
-    return [SubjectResponse.model_validate(s) for s in subjects]
+    result = await db.execute(
+        _accessible_subject_query(current_user)
+        .options(selectinload(Subject.department), selectinload(Subject.semester))
+        .distinct()
+    )
+    subjects = result.scalars().unique().all()
+    responses = []
+    for subject in subjects:
+        response = SubjectResponse.model_validate(subject)
+        response.department_name = subject.department.name if subject.department else None
+        response.semester_name = (
+            f"Semester {subject.semester.number}" if subject.semester else None
+        )
+        responses.append(response)
+    return responses
+
+
+@router.get("/subjects/{subject_id}/documents")
+async def get_subject_documents(subject_id: UUID, current_user: StudentUser, db: DbSession):
+    """List published study material for a subject (must have access)."""
+    await _require_subject_access(subject_id, current_user, db)
+
+    result = await db.execute(
+        select(Document)
+        .where(
+            Document.subject_id == subject_id,
+            Document.status == DocumentStatus.PUBLISHED,
+            Document.archived_at.is_(None),
+        )
+        .order_by(Document.published_at.desc().nulls_last())
+    )
+    docs = result.scalars().all()
+    return [
+        {
+            "id": str(d.id),
+            "document_name": d.document_name,
+            "source_type": d.source_type.value,
+            "file_size": d.file_size,
+            "topic": d.topic,
+            "description": d.description,
+            "total_chunks": d.total_chunks,
+            "published_at": (d.published_at or d.created_at).isoformat(),
+        }
+        for d in docs
+    ]
+
+
+@router.get("/documents/{document_id}/file")
+async def get_document_file(
+    document_id: UUID,
+    current_user: StudentUser,
+    db: DbSession,
+    download: bool = Query(False),
+):
+    """Stream a published document's file for viewing or download."""
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if doc is None or doc.archived_at is not None or doc.status != DocumentStatus.PUBLISHED:
+        raise NotFoundError("Document")
+
+    await _require_subject_access(doc.subject_id, current_user, db)
+
+    try:
+        data = await get_document_storage().get(doc.storage_path)
+    except FileNotFoundError as exc:
+        raise NotFoundError("Document file", "The stored file could not be found") from exc
+
+    filename = quote(doc.original_filename or doc.document_name)
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=data,
+        media_type=doc.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{filename}",
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.get("/subjects/{subject_id}/modules", response_model=list[ModuleResponse])
@@ -158,6 +252,9 @@ async def ask_question(
         prompt_version=result.prompt_version,
         retrieved_chunk_ids=[c.chunk_id for c in result.sources] or None,
         processing_time_ms=result.processing_ms,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
         validation_result=result.validation or None,
     )
     db.add(question_log)

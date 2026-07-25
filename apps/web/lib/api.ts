@@ -22,7 +22,7 @@ function handleUnauthorized(errorDetail: string): void {
   }
 }
 
-export async function fetchApi(endpoint: string, options: RequestInit = {}) {
+async function requestApi(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const configuredUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const apiUrl = configuredUrl.replace(/\/+$/, "");
   const normalizedEndpoint =
@@ -62,7 +62,18 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
     throw new Error(errorDetail);
   }
 
+  return response;
+}
+
+export async function fetchApi(endpoint: string, options: RequestInit = {}) {
+  const response = await requestApi(endpoint, options);
   return response.json();
+}
+
+/** Fetch a binary file through the authenticated API. */
+export async function fetchApiBlob(endpoint: string): Promise<Blob> {
+  const response = await requestApi(endpoint);
+  return response.blob();
 }
 
 // ── Ask-question (RAG) API ─────────────────────────────────────
@@ -161,6 +172,7 @@ export interface ApiSubject {
   credits: number | null;
   is_active: boolean;
   department_name?: string | null;
+  semester_name?: string | null;
 }
 
 export interface ApiModule {
@@ -322,7 +334,96 @@ export const adminApi = {
   },
 };
 
+// ── Admin analytics ─────────────────────────────────────────
+// Mirrors services/api app/schemas/analytics.py
+
+export type AnalyticsRange = "day" | "month" | "year" | "all";
+
+export interface AnalyticsTimePoint {
+  t: string;
+  value: number;
+}
+
+export interface AnalyticsNamedCount {
+  name: string;
+  count: number;
+  code: string | null;
+}
+
+export interface AnalyticsHourCount {
+  hour: number;
+  count: number;
+}
+
+export interface AnalyticsUserMetric {
+  user_id: string;
+  name: string;
+  value: number;
+}
+
+export interface AnalyticsPayload {
+  range: AnalyticsRange;
+  kpis: {
+    total_questions: number;
+    questions_today: number;
+    total_tokens: number;
+    active_users_24h: number;
+    total_students: number;
+    avg_response_ms: number;
+    avg_rating: number | null;
+    published_documents: number;
+  };
+  tokens: {
+    total: number;
+    avg_per_question: number;
+    series: AnalyticsTimePoint[];
+    per_user: AnalyticsUserMetric[];
+  };
+  usage: {
+    questions_series: AnalyticsTimePoint[];
+    by_subject: AnalyticsNamedCount[];
+    marks_distribution: AnalyticsNamedCount[];
+    peak_hours: AnalyticsHourCount[];
+  };
+  users: {
+    active_now: number;
+    active_today: number;
+    active_week: number;
+    active_month: number;
+    signups_series: AnalyticsTimePoint[];
+    most_active: AnalyticsUserMetric[];
+    logins_series: AnalyticsTimePoint[];
+  };
+  performance: {
+    avg_ms: number;
+    trend_pct: number | null;
+    rating_distribution: AnalyticsNamedCount[];
+    low_rated: number;
+  };
+  content: {
+    documents_by_status: AnalyticsNamedCount[];
+    subjects: number;
+    departments: number;
+  };
+}
+
+export const analyticsApi = {
+  getAnalytics: (range: AnalyticsRange): Promise<AnalyticsPayload> =>
+    fetchApi(`/api/v1/admin/analytics?range=${range}`),
+};
+
 // ── Student API ──────────────────────────────────────────────
+
+export interface ApiSubjectDocument {
+  id: string;
+  document_name: string;
+  source_type: SourceTypeValue;
+  file_size: number;
+  topic: string | null;
+  description: string | null;
+  total_chunks: number;
+  published_at: string;
+}
 
 export interface ApiHistoryItem {
   id: string;
@@ -341,6 +442,12 @@ export const studentApi = {
 
   listModules: (subjectId: string): Promise<ApiModule[]> =>
     fetchApi(`/api/v1/student/subjects/${encodeURIComponent(subjectId)}/modules`),
+
+  listSubjectDocuments: (subjectId: string): Promise<ApiSubjectDocument[]> =>
+    fetchApi(`/api/v1/student/subjects/${encodeURIComponent(subjectId)}/documents`),
+
+  getDocumentFile: (documentId: string): Promise<Blob> =>
+    fetchApiBlob(`/api/v1/student/documents/${encodeURIComponent(documentId)}/file`),
 
   getHistory: (pageSize = 20): Promise<ApiHistoryItem[]> =>
     fetchApi(`/api/v1/student/history?page=1&page_size=${pageSize}`),

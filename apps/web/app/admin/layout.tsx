@@ -7,6 +7,7 @@ import { useRouter, usePathname } from "next/navigation";
 import {
   Building,
   Graph,
+  Bolt,
   DocumentText,
   Ruler,
   BookOpen,
@@ -22,6 +23,7 @@ import { hasRealSession } from "@/lib/api";
 
 const navItems: { icon: IconComponent; label: string; href: string; id: string }[] = [
   { icon: Graph, label: "Dashboard", href: "/admin", id: "dashboard" },
+  { icon: Bolt, label: "Analytics", href: "/admin/analytics", id: "analytics" },
   { icon: Building, label: "Departments", href: "/admin/departments", id: "departments" },
   { icon: DocumentText, label: "Documents", href: "/admin/documents", id: "documents" },
   { icon: Ruler, label: "Answer format", href: "/admin/answer-rules", id: "rules" },

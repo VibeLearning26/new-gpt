@@ -27,6 +27,7 @@ from app.core.security import (
     validate_password_strength,
     verify_password,
 )
+from app.models.system import AuditLog
 from app.models.user import RefreshToken, User
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -71,6 +72,17 @@ async def login(request: Request, body: LoginRequest, db: DbSession):
 
     # Update last login
     user.last_login_at = datetime.now(UTC)
+
+    db.add(
+        AuditLog(
+            user_id=user.id,
+            action="user.login",
+            resource_type="user",
+            resource_id=str(user.id),
+            ip_address=request.client.host if request.client else None,
+            user_agent=(request.headers.get("user-agent") or "")[:512] or None,
+        )
+    )
 
     await db.flush()
 

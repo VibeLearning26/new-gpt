@@ -14,12 +14,13 @@ import io
 import logging
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import Integer, delete, func, select
 
 from app.core.config import get_settings
 from app.core.dependencies import AdminUser, DbSession
@@ -62,6 +63,19 @@ from app.schemas.academic import (
     UserCreate,
     UserResponse,
     UserUpdate,
+)
+from app.schemas.analytics import (
+    AnalyticsKpis,
+    AnalyticsResponse,
+    ContentStats,
+    HourCount,
+    NamedCount,
+    PerformanceStats,
+    TimePoint,
+    TokenStats,
+    UsageStats,
+    UserMetric,
+    UsersStats,
 )
 from app.schemas.common import MessageResponse
 from app.schemas.document import DocumentUploadResponse
@@ -114,6 +128,356 @@ async def get_dashboard(current_user: AdminUser, db: DbSession):
         "avg_processing_ms": round(avg_time.scalar() or 0),
         "low_rated_answers": low_rated.scalar() or 0,
     }
+
+
+# ── Analytics ────────────────────────────────────────────────
+
+AnalyticsRange = Literal["day", "month", "year", "all"]
+
+# range → (date_trunc unit, bucket count, window length)
+_RANGE_SPECS: dict[str, tuple[str, int | None, timedelta | None]] = {
+    "day": ("hour", 24, timedelta(hours=24)),
+    "month": ("day", 30, timedelta(days=30)),
+    "year": ("month", 12, timedelta(days=365)),
+    "all": ("month", None, None),
+}
+
+
+def _month_start(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, 1, tzinfo=UTC)
+
+
+def _series_buckets(unit: str, count: int | None, earliest: datetime | None) -> list[datetime]:
+    """Continuous bucket starts ending at the current (truncated) instant."""
+    now = datetime.now(UTC)
+    if unit == "hour":
+        end = now.replace(minute=0, second=0, microsecond=0)
+        return [end - timedelta(hours=i) for i in range((count or 24) - 1, -1, -1)]
+    if unit == "day":
+        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return [end - timedelta(days=i) for i in range((count or 30) - 1, -1, -1)]
+    end = _month_start(now)
+    total = count
+    if total is None:
+        if earliest is None:
+            total = 12
+        else:
+            total = min(36, (end.year - earliest.year) * 12 + (end.month - earliest.month) + 1)
+            total = max(total, 1)
+    buckets: list[datetime] = []
+    year, month = end.year, end.month
+    for _ in range(total):
+        buckets.append(datetime(year, month, 1, tzinfo=UTC))
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    buckets.reverse()
+    return buckets
+
+
+def _fill_series(buckets: list[datetime], rows: list[tuple[datetime, float]]) -> list[TimePoint]:
+    values = {bucket: float(value or 0) for bucket, value in rows}
+    return [TimePoint(t=bucket, value=values.get(bucket, 0.0)) for bucket in buckets]
+
+
+@router.get("/analytics", response_model=AnalyticsResponse)
+async def get_analytics(
+    current_user: AdminUser,
+    db: DbSession,
+    range_param: AnalyticsRange = Query("month", alias="range"),
+):
+    """Aggregate platform analytics scoped by a time range."""
+    unit, bucket_count, window = _RANGE_SPECS[range_param]
+    now = datetime.now(UTC)
+    since = now - window if window else None
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def scoped(column, dt: datetime | None = since):
+        return column >= dt if dt is not None else True
+
+    # Bucket grid for every time series in this range.
+    earliest_question = (
+        await db.execute(select(func.min(QuestionLog.created_at)))
+    ).scalar()
+    buckets = _series_buckets(unit, bucket_count, earliest_question)
+
+    # ── KPIs ──────────────────────────────────────────────────
+    total_questions = (
+        await db.execute(
+            select(func.count()).select_from(QuestionLog).where(scoped(QuestionLog.created_at))
+        )
+    ).scalar() or 0
+    questions_today = (
+        await db.execute(
+            select(func.count())
+            .select_from(QuestionLog)
+            .where(QuestionLog.created_at >= today_start)
+        )
+    ).scalar() or 0
+    total_tokens = (
+        await db.execute(
+            select(func.coalesce(func.sum(QuestionLog.total_tokens), 0))
+            .select_from(QuestionLog)
+            .where(scoped(QuestionLog.created_at))
+        )
+    ).scalar() or 0
+    active_24h = (
+        await db.execute(
+            select(func.count(func.distinct(QuestionLog.user_id)))
+            .select_from(QuestionLog)
+            .where(QuestionLog.created_at >= now - timedelta(hours=24))
+        )
+    ).scalar() or 0
+    total_students = (
+        await db.execute(
+            select(func.count()).select_from(User).where(User.role == UserRole.STUDENT)
+        )
+    ).scalar() or 0
+    avg_response_ms = (
+        await db.execute(
+            select(func.avg(QuestionLog.processing_time_ms))
+            .select_from(QuestionLog)
+            .where(scoped(QuestionLog.created_at))
+        )
+    ).scalar() or 0
+    avg_rating = (
+        await db.execute(
+            select(func.avg(Feedback.rating))
+            .select_from(Feedback)
+            .where(scoped(Feedback.created_at))
+        )
+    ).scalar()
+    published_documents = (
+        await db.execute(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.status == DocumentStatus.PUBLISHED)
+        )
+    ).scalar() or 0
+
+    # ── Tokens ────────────────────────────────────────────────
+    token_bucket = func.date_trunc(unit, QuestionLog.created_at)
+    token_rows = (
+        await db.execute(
+            select(token_bucket, func.sum(QuestionLog.total_tokens))
+            .where(scoped(QuestionLog.created_at))
+            .group_by(token_bucket)
+        )
+    ).all()
+    per_user_rows = (
+        await db.execute(
+            select(
+                User.id,
+                User.full_name,
+                func.coalesce(func.sum(QuestionLog.total_tokens), 0),
+            )
+            .select_from(QuestionLog)
+            .join(User, User.id == QuestionLog.user_id)
+            .where(scoped(QuestionLog.created_at))
+            .group_by(User.id, User.full_name)
+            .order_by(func.sum(QuestionLog.total_tokens).desc())
+            .limit(5)
+        )
+    ).all()
+
+    # ── Usage ─────────────────────────────────────────────────
+    question_bucket = func.date_trunc(unit, QuestionLog.created_at)
+    question_rows = (
+        await db.execute(
+            select(question_bucket, func.count())
+            .where(scoped(QuestionLog.created_at))
+            .group_by(question_bucket)
+        )
+    ).all()
+    subject_rows = (
+        await db.execute(
+            select(Subject.name, Subject.code, func.count())
+            .select_from(QuestionLog)
+            .join(Subject, Subject.id == QuestionLog.subject_id)
+            .where(scoped(QuestionLog.created_at))
+            .group_by(Subject.name, Subject.code)
+            .order_by(func.count().desc())
+            .limit(8)
+        )
+    ).all()
+    marks_rows = (
+        await db.execute(
+            select(QuestionLog.marks, func.count())
+            .where(scoped(QuestionLog.created_at))
+            .group_by(QuestionLog.marks)
+            .order_by(QuestionLog.marks)
+        )
+    ).all()
+    hour_expr = func.extract("hour", QuestionLog.created_at).cast(Integer)
+    hour_rows = (
+        await db.execute(
+            select(hour_expr, func.count())
+            .where(scoped(QuestionLog.created_at))
+            .group_by(hour_expr)
+        )
+    ).all()
+    peak_hours = [
+        HourCount(hour=int(hour), count=int(count)) for hour, count in hour_rows
+    ]
+    peak_hours.sort(key=lambda h: h.hour)
+
+    # ── Users ─────────────────────────────────────────────────
+    async def _active_users(window_start: datetime) -> int:
+        return (
+            await db.execute(
+                select(func.count(func.distinct(QuestionLog.user_id)))
+                .select_from(QuestionLog)
+                .where(QuestionLog.created_at >= window_start)
+            )
+        ).scalar() or 0
+
+    active_now = await _active_users(now - timedelta(minutes=15))
+    active_today = await _active_users(today_start)
+    active_week = await _active_users(now - timedelta(days=7))
+    active_month = await _active_users(now - timedelta(days=30))
+
+    signup_bucket = func.date_trunc(unit, User.created_at)
+    signups_rows = (
+        await db.execute(
+            select(signup_bucket, func.count())
+            .where(User.role == UserRole.STUDENT, scoped(User.created_at))
+            .group_by(signup_bucket)
+        )
+    ).all()
+    most_active_rows = (
+        await db.execute(
+            select(User.id, User.full_name, func.count())
+            .select_from(QuestionLog)
+            .join(User, User.id == QuestionLog.user_id)
+            .where(scoped(QuestionLog.created_at))
+            .group_by(User.id, User.full_name)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+    ).all()
+    login_bucket = func.date_trunc(unit, AuditLog.created_at)
+    login_rows = (
+        await db.execute(
+            select(login_bucket, func.count())
+            .where(AuditLog.action == "user.login", scoped(AuditLog.created_at))
+            .group_by(login_bucket)
+        )
+    ).all()
+
+    # ── Performance ───────────────────────────────────────────
+    trend_pct: float | None = None
+    if window is not None:
+        prev_avg = (
+            await db.execute(
+                select(func.avg(QuestionLog.processing_time_ms))
+                .select_from(QuestionLog)
+                .where(
+                    QuestionLog.created_at >= since - window,
+                    QuestionLog.created_at < since,
+                )
+            )
+        ).scalar()
+        if prev_avg and avg_response_ms:
+            trend_pct = round((avg_response_ms - prev_avg) / prev_avg * 100, 1)
+
+    rating_rows = (
+        await db.execute(
+            select(Feedback.rating, func.count())
+            .where(scoped(Feedback.created_at))
+            .group_by(Feedback.rating)
+        )
+    ).all()
+    rating_map = {int(rating): int(count) for rating, count in rating_rows}
+    rating_distribution = [
+        NamedCount(name=str(star), count=rating_map.get(star, 0)) for star in range(1, 6)
+    ]
+    low_rated = (
+        await db.execute(
+            select(func.count())
+            .select_from(Feedback)
+            .where(Feedback.rating <= 2, scoped(Feedback.created_at))
+        )
+    ).scalar() or 0
+
+    # ── Content ───────────────────────────────────────────────
+    status_rows = (
+        await db.execute(
+            select(Document.status, func.count())
+            .where(Document.archived_at.is_(None))
+            .group_by(Document.status)
+        )
+    ).all()
+    subject_count = (
+        await db.execute(
+            select(func.count()).select_from(Subject).where(Subject.archived_at.is_(None))
+        )
+    ).scalar() or 0
+    department_count = (
+        await db.execute(
+            select(func.count()).select_from(Department).where(Department.archived_at.is_(None))
+        )
+    ).scalar() or 0
+
+    return AnalyticsResponse(
+        range=range_param,
+        kpis=AnalyticsKpis(
+            total_questions=total_questions,
+            questions_today=questions_today,
+            total_tokens=int(total_tokens),
+            active_users_24h=active_24h,
+            total_students=total_students,
+            avg_response_ms=round(float(avg_response_ms), 1),
+            avg_rating=round(float(avg_rating), 2) if avg_rating is not None else None,
+            published_documents=published_documents,
+        ),
+        tokens=TokenStats(
+            total=int(total_tokens),
+            avg_per_question=round(int(total_tokens) / total_questions, 1) if total_questions else 0.0,
+            series=_fill_series(buckets, token_rows),
+            per_user=[
+                UserMetric(user_id=user_id, name=name, value=float(value))
+                for user_id, name, value in per_user_rows
+            ],
+        ),
+        usage=UsageStats(
+            questions_series=_fill_series(buckets, question_rows),
+            by_subject=[
+                NamedCount(name=name, count=int(count), code=code)
+                for name, code, count in subject_rows
+            ],
+            marks_distribution=[
+                NamedCount(name=f"{marks} marks", count=int(count))
+                for marks, count in marks_rows
+            ],
+            peak_hours=peak_hours,
+        ),
+        users=UsersStats(
+            active_now=active_now,
+            active_today=active_today,
+            active_week=active_week,
+            active_month=active_month,
+            signups_series=_fill_series(buckets, signups_rows),
+            most_active=[
+                UserMetric(user_id=user_id, name=name, value=float(count))
+                for user_id, name, count in most_active_rows
+            ],
+            logins_series=_fill_series(buckets, login_rows),
+        ),
+        performance=PerformanceStats(
+            avg_ms=round(float(avg_response_ms), 1),
+            trend_pct=trend_pct,
+            rating_distribution=rating_distribution,
+            low_rated=low_rated,
+        ),
+        content=ContentStats(
+            documents_by_status=[
+                NamedCount(name=status.value, count=int(count))
+                for status, count in status_rows
+            ],
+            subjects=subject_count,
+            departments=department_count,
+        ),
+    )
 
 
 # ── Quick Config / System Settings ───────────────────────────

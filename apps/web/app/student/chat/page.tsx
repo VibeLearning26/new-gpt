@@ -102,6 +102,8 @@ const semLabel = (sem: string) => `Semester ${sem.replace("S", "")}`;
 
 export default function ChatPage() {
   const [marks, setMarks] = useState(5);
+  const [customMarksOpen, setCustomMarksOpen] = useState(false);
+  const [customMarksText, setCustomMarksText] = useState("15");
   const [semester, setSemester] = useState(
     SEMESTER_OPTIONS.includes("S5") ? "S5" : SEMESTER_OPTIONS[0],
   );
@@ -411,18 +413,51 @@ export default function ChatPage() {
             </div>
 
             {/* Marks */}
-            <div className="flex items-center gap-1.5 ml-auto">
+            <div className="flex items-center gap-1.5 ml-auto flex-wrap justify-end">
               <span className="text-[11px] text-faint mr-1">Marks</span>
               {MARKS_OPTIONS.map((m) => (
                 <button
                   key={m}
                   type="button"
-                  onClick={() => setMarks(m)}
-                  className={`chip !px-3.5 ${marks === m ? "active" : ""}`}
+                  onClick={() => {
+                    setMarks(m);
+                    setCustomMarksOpen(false);
+                  }}
+                  className={`chip !px-3.5 ${!customMarksOpen && marks === m ? "active" : ""}`}
                 >
                   {m}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setCustomMarksOpen((v) => !v)}
+                className={`chip !px-3.5 ${customMarksOpen ? "active" : ""}`}
+                aria-expanded={customMarksOpen}
+              >
+                Custom
+              </button>
+              {customMarksOpen && (
+                <span className="flex items-center gap-1.5 fade-in">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    value={customMarksText}
+                    onChange={(e) => {
+                      const cleaned = e.target.value.replace(/\D/g, "").slice(0, 2);
+                      setCustomMarksText(cleaned);
+                      const parsed = parseInt(cleaned, 10);
+                      if (!Number.isNaN(parsed) && parsed >= 1) {
+                        setMarks(Math.min(20, parsed));
+                      }
+                    }}
+                    className="marks-custom-input"
+                    aria-label="Custom marks between 1 and 20"
+                    placeholder="1–20"
+                  />
+                  <span className="text-[10px] text-faint">max 20</span>
+                </span>
+              )}
             </div>
           </div>
 

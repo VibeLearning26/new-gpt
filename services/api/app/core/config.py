@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     # ── AI / LLM ────────────────────────────────────────────
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2:3b"
-    OLLAMA_TIMEOUT_SECONDS: float = 120.0
+    # CPU inference is slow (~5-10 tok/s); a grounded answer with a long
+    # RAG prompt can need several minutes end to end.
+    OLLAMA_TIMEOUT_SECONDS: float = 300.0
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 
     # ── RAG Retrieval ────────────────────────────────────────

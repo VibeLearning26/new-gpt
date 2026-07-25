@@ -11,7 +11,6 @@ import {
   ChatRound,
   Bolt,
   Warning,
-  Settings,
   Upload,
   Ruler,
   BookOpen,
@@ -38,69 +37,6 @@ const statusBadge: Record<string, string> = {
   ready: "badge-success",
   failed: "badge-error",
 };
-
-const SETTING_LABELS: Record<string, string> = {
-  max_questions_per_day: "Max questions per user / day",
-  max_concurrent_sessions: "Max concurrent sessions",
-  api_rate_limit: "API rate limit",
-};
-
-function QuickConfig() {
-  const [settings, setSettings] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    adminApi
-      .getSettings()
-      .then(setSettings)
-      .catch((err) => setError(err instanceof Error ? err.message : "Unable to load settings"));
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    setMessage(null);
-    setError(null);
-    try {
-      await adminApi.updateSettings(settings);
-      setMessage("Settings saved");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save settings");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="panel p-5">
-      <h2 className="font-semibold mb-4 flex items-center gap-2">
-        <Settings size={16} className="text-brand-accent" />
-        Quick config
-      </h2>
-      <div className="space-y-3">
-        {Object.entries(settings).map(([key, value]) => (
-          <div key={key}>
-            <label className="field-label" htmlFor={`cfg-${key}`}>
-              {SETTING_LABELS[key] ?? key.replace(/_/g, " ")}
-            </label>
-            <input
-              id={`cfg-${key}`}
-              className="input mt-1"
-              value={value}
-              onChange={(e) => setSettings((current) => ({ ...current, [key]: e.target.value }))}
-            />
-          </div>
-        ))}
-      </div>
-      {message && <p className="text-xs text-brand-accent mt-3">{message}</p>}
-      {error && <p className="text-xs text-[var(--color-err)] mt-3">{error}</p>}
-      <button className="btn-primary mt-4 w-full" onClick={save} disabled={saving}>
-        {saving ? "Saving..." : "Save configuration"}
-      </button>
-    </div>
-  );
-}
 
 export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
@@ -263,9 +199,17 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Quick config hub */}
-      <div className="grid lg:grid-cols-3 gap-5 mt-5">
-        <QuickConfig />
+      {/* Quick config + analytics live in the Analytics section */}
+      <div className="mt-5 flex items-center justify-between gap-3 panel px-5 py-4">
+        <div>
+          <h2 className="font-semibold">Analytics &amp; config</h2>
+          <p className="text-xs text-faint mt-0.5">
+            Usage, tokens, performance and quick system settings
+          </p>
+        </div>
+        <Link href="/admin/analytics" className="btn-secondary shrink-0">
+          <Bolt size={15} className="text-brand-accent" /> Open analytics
+        </Link>
       </div>
     </div>
   );

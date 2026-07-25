@@ -71,6 +71,9 @@ class GenerationResult:
     processing_ms: int
     sources: list[SourceCitation] = field(default_factory=list)
     validation: dict = field(default_factory=dict)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 def _preview(text: str, limit: int = 200) -> str:
@@ -195,7 +198,9 @@ class AnswerGenerationService:
         self.settings = settings
 
     async def _load_rule(self, subject_id: uuid.UUID, marks: int) -> AnswerRule | None:
-        """Best matching rule: subject-specific beats default, exact marks required."""
+        """Best matching rule: exact marks first (subject-specific beats default).
+        For custom marks with no exact rule, fall back to the closest active rule
+        so the answer still gets proportionate length and structure guidance."""
         result = await self.db.execute(
             select(AnswerRule).where(
                 AnswerRule.marks == marks,
@@ -206,7 +211,22 @@ class AnswerGenerationService:
         )
         rules = result.scalars().all()
         subject_rules = [r for r in rules if r.subject_id == subject_id]
-        return subject_rules[0] if subject_rules else (rules[0] if rules else None)
+        if subject_rules or rules:
+            return subject_rules[0] if subject_rules else rules[0]
+
+        fallback = await self.db.execute(
+            select(AnswerRule).where(
+                AnswerRule.is_active == True,  # noqa: E712
+                AnswerRule.archived_at.is_(None),
+                (AnswerRule.subject_id == subject_id) | (AnswerRule.subject_id.is_(None)),
+            )
+        )
+        candidates = fallback.scalars().all()
+        if not candidates:
+            return None
+        subject_candidates = [r for r in candidates if r.subject_id == subject_id]
+        pool = subject_candidates or candidates
+        return min(pool, key=lambda r: (abs(r.marks - marks), r.subject_id is None))
 
     async def generate(
         self,
@@ -246,7 +266,9 @@ class AnswerGenerationService:
         prompt = build_prompt(question, marks, citations, rule)
 
         try:
-            answer = await self.ollama.generate(prompt=prompt, system_prompt=SYSTEM_PROMPT)
+            usage = await self.ollama.generate_with_usage(
+                prompt=prompt, system_prompt=SYSTEM_PROMPT
+            )
         except OllamaError as e:
             logger.error(f"Ollama generation failed: {e}")
             return GenerationResult(
@@ -260,6 +282,7 @@ class AnswerGenerationService:
                 validation={"error": str(e)},
             )
 
+        answer = usage.content
         validation = validate_answer(answer, citations, rule)
         status = (
             AnswerStatus.COMPLETED
@@ -282,4 +305,7 @@ class AnswerGenerationService:
             processing_ms=int((time.time() - start) * 1000),
             sources=citations,
             validation=validation,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
         )

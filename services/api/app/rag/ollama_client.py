@@ -7,6 +7,8 @@ Implements error handling, timeout options, and health readiness checks.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import httpx
 
 from app.core.config import get_settings
@@ -40,6 +42,21 @@ class OllamaEmptyResponseError(OllamaError):
     """Raised when Ollama returns an empty or invalid content response."""
 
     pass
+
+
+@dataclass
+class OllamaUsage:
+    """Token usage reported by Ollama for a non-streaming completion."""
+
+    content: str
+    prompt_tokens: int | None
+    completion_tokens: int | None
+
+    @property
+    def total_tokens(self) -> int | None:
+        if self.prompt_tokens is None and self.completion_tokens is None:
+            return None
+        return (self.prompt_tokens or 0) + (self.completion_tokens or 0)
 
 
 class OllamaClient:
@@ -80,6 +97,19 @@ class OllamaClient:
             OllamaTimeoutError: If the request times out.
             OllamaResponseError: If the response is status != 200 or malformed.
             OllamaEmptyResponseError: If the response content is empty.
+        """
+        usage = await self.generate_with_usage(prompt, system_prompt)
+        return usage.content
+
+    async def generate_with_usage(
+        self, prompt: str, system_prompt: str | None = None
+    ) -> OllamaUsage:
+        """
+        Generate a non-streaming chat completion and return token usage.
+
+        Ollama reports ``prompt_eval_count`` and ``eval_count`` on
+        non-streaming responses; both are surfaced as prompt/completion
+        token counts. Counts are ``None`` if the server omits them.
         """
         messages = []
         if system_prompt:
@@ -130,7 +160,13 @@ class OllamaClient:
         if not content.strip():
             raise OllamaEmptyResponseError("Ollama returned an empty response content")
 
-        return content
+        prompt_tokens = data.get("prompt_eval_count")
+        completion_tokens = data.get("eval_count")
+        return OllamaUsage(
+            content=content,
+            prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+            completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+        )
 
     async def check_health(self) -> bool:
         """

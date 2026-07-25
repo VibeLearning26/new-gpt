@@ -65,6 +65,9 @@ class QuestionLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ARRAY(UUID(as_uuid=True)), nullable=True
     )
     processing_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     validation_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
