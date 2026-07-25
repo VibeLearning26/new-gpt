@@ -1,87 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Star, Bell, Warning, Check } from "reicon-react";
-
-interface FeedbackItem {
-  id: string;
-  question: string;
-  subject: string;
-  rating: number;
-  comment: string;
-  student: string;
-  when: string;
-  status: "new" | "reviewed" | "resolved";
-}
-
-const MOCK_FEEDBACK: FeedbackItem[] = [
-  {
-    id: "f1",
-    question: "Explain ACID properties of a transaction",
-    subject: "DBMS",
-    rating: 5,
-    comment: "Very detailed answer with accurate citations. Exactly what I needed for my exam prep.",
-    student: "Abhinav S.",
-    when: "1h ago",
-    status: "new",
-  },
-  {
-    id: "f2",
-    question: "Compare paging and segmentation",
-    subject: "OS",
-    rating: 4,
-    comment: "Good explanation but could include a diagram reference.",
-    student: "Priya P.",
-    when: "3h ago",
-    status: "new",
-  },
-  {
-    id: "f3",
-    question: "Difference between TCP and UDP",
-    subject: "CN",
-    rating: 2,
-    comment: "The answer missed key points about connection-oriented vs connectionless nature. Needs more depth.",
-    student: "Rahul K.",
-    when: "Yesterday",
-    status: "reviewed",
-  },
-  {
-    id: "f4",
-    question: "Dijkstra's algorithm steps",
-    subject: "DAA",
-    rating: 5,
-    comment: "Perfect step-by-step breakdown with the example. Very helpful!",
-    student: "Arjun N.",
-    when: "Yesterday",
-    status: "resolved",
-  },
-  {
-    id: "f5",
-    question: "Normalization up to BCNF",
-    subject: "DBMS",
-    rating: 3,
-    comment: "Covered 1NF to 3NF well but BCNF explanation was thin.",
-    student: "Kavita R.",
-    when: "2 days ago",
-    status: "reviewed",
-  },
-  {
-    id: "f6",
-    question: "Round Robin vs SJF scheduling",
-    subject: "OS",
-    rating: 4,
-    comment: "Great comparison table format. Would appreciate a worked Gantt chart example.",
-    student: "Sneha G.",
-    when: "3 days ago",
-    status: "resolved",
-  },
-];
+import { useState, useEffect, useCallback } from "react";
+import { Star, Bell, Warning, Check, Trash } from "reicon-react";
+import { adminApi, type ApiAdminFeedback } from "@/lib/api";
 
 const statusBadge: Record<string, string> = {
   new: "badge-red",
   reviewed: "badge-warning",
   resolved: "badge-success",
 };
+
+function timeAgo(iso: string): string {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
 
 function StarRating({ rating }: { rating: number }) {
   return (
@@ -100,16 +35,71 @@ function StarRating({ rating }: { rating: number }) {
 
 export default function FeedbackPage() {
   const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
+  const [feedback, setFeedback] = useState<ApiAdminFeedback[]>([]);
   const [filter, setFilter] = useState<"all" | "new" | "reviewed" | "resolved">("all");
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    adminApi
+      .listFeedback()
+      .then((items) => {
+        setFeedback(items);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Unable to load feedback"))
+      .finally(() => setLoading(false));
+  }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setFeedback(MOCK_FEEDBACK);
-      setLoading(false);
-    }, 600);
-    return () => clearTimeout(t);
-  }, []);
+    load();
+  }, [load]);
+
+  const setStatus = async (id: string, status: "reviewed" | "resolved") => {
+    setBusyId(id);
+    try {
+      const updated = await adminApi.reviewFeedback(id, { status });
+      setFeedback((prev) => prev.map((f) => (f.id === id ? updated : f)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update failed");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const sendReply = async (id: string) => {
+    const text = replyText.trim();
+    if (!text) return;
+    setBusyId(id);
+    try {
+      const updated = await adminApi.reviewFeedback(id, {
+        status: "resolved",
+        admin_response: text,
+      });
+      setFeedback((prev) => prev.map((f) => (f.id === id ? updated : f)));
+      setReplyingTo(null);
+      setReplyText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reply failed");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!window.confirm("Delete this feedback entry? This cannot be undone.")) return;
+    setBusyId(id);
+    try {
+      await adminApi.deleteFeedback(id);
+      setFeedback((prev) => prev.filter((f) => f.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const filtered = feedback.filter((f) => filter === "all" || f.status === filter);
 
@@ -119,16 +109,12 @@ export default function FeedbackPage() {
   const newCount = feedback.filter((f) => f.status === "new").length;
   const lowRated = feedback.filter((f) => f.rating <= 2).length;
 
-  const updateStatus = (id: string, status: FeedbackItem["status"]) => {
-    setFeedback((prev) => prev.map((f) => (f.id === id ? { ...f, status } : f)));
-  };
-
   return (
     <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Student feedback</h1>
         <p className="text-sm text-muted mt-1">
-          Review ratings and comments from students on generated answers.
+          Review ratings and problem reports from students on generated answers.
         </p>
       </div>
 
@@ -168,6 +154,12 @@ export default function FeedbackPage() {
         ))}
       </div>
 
+      {error && (
+        <div className="panel p-4 mb-5 text-sm text-err" role="alert">
+          {error}
+        </div>
+      )}
+
       {/* Feedback cards */}
       <div className="space-y-3">
         {loading
@@ -181,19 +173,74 @@ export default function FeedbackPage() {
           : filtered.map((f) => (
               <div key={f.id} className="card card-hover p-5 fade-up">
                 <div className="flex flex-wrap items-center gap-2 mb-2">
-                  <span className="badge badge-neutral">{f.subject}</span>
+                  {f.subject_name && <span className="badge badge-neutral">{f.subject_name}</span>}
+                  <span className="badge badge-neutral">{f.marks} marks</span>
                   <StarRating rating={f.rating} />
                   <span className={`badge ${statusBadge[f.status]}`}>{f.status}</span>
-                  <span className="text-[11px] text-faint ml-auto">{f.when}</span>
+                  <span className="text-[11px] text-faint ml-auto">{timeAgo(f.created_at)}</span>
                 </div>
                 <h3 className="font-semibold mb-1">{f.question}</h3>
-                <p className="text-sm text-muted mb-3">{f.comment}</p>
+                {f.comment ? (
+                  <p className="text-sm text-muted mb-3">{f.comment}</p>
+                ) : (
+                  <p className="text-sm text-faint italic mb-3">No comment — rating only.</p>
+                )}
+                {f.answer_preview && (
+                  <details className="mb-3">
+                    <summary className="text-xs text-faint cursor-pointer hover:text-muted transition-colors">
+                      Answer preview
+                    </summary>
+                    <p className="text-xs text-muted mt-2 whitespace-pre-wrap border-l-2 border-line-soft pl-3">
+                      {f.answer_preview}
+                    </p>
+                  </details>
+                )}
+                {f.admin_response && (
+                  <div className="mb-3 rounded-lg bg-panel-2 border border-line-soft p-3">
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-faint mb-1">
+                      Admin reply
+                    </p>
+                    <p className="text-sm text-muted">{f.admin_response}</p>
+                  </div>
+                )}
+                {replyingTo === f.id && (
+                  <div className="mb-3 fade-in">
+                    <textarea
+                      autoFocus
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      rows={2}
+                      maxLength={2000}
+                      placeholder="Write a reply to the student… (marks this resolved)"
+                      className="input resize-none text-sm"
+                    />
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => sendReply(f.id)}
+                        disabled={!replyText.trim() || busyId === f.id}
+                        className="btn-primary !py-1.5 !text-xs"
+                      >
+                        {busyId === f.id ? "Sending…" : "Send reply & resolve"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setReplyingTo(null);
+                          setReplyText("");
+                        }}
+                        className="btn-ghost !py-1.5 !text-xs"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-faint">— {f.student}</span>
+                  <span className="text-xs text-faint">— {f.student_name}</span>
                   <div className="flex gap-2">
                     {f.status === "new" && (
                       <button
-                        onClick={() => updateStatus(f.id, "reviewed")}
+                        onClick={() => setStatus(f.id, "reviewed")}
+                        disabled={busyId === f.id}
                         className="btn-ghost"
                       >
                         Mark reviewed
@@ -201,12 +248,29 @@ export default function FeedbackPage() {
                     )}
                     {f.status !== "resolved" && (
                       <button
-                        onClick={() => updateStatus(f.id, "resolved")}
+                        onClick={() => setReplyingTo(f.id)}
+                        className="btn-ghost"
+                      >
+                        Reply
+                      </button>
+                    )}
+                    {f.status !== "resolved" && (
+                      <button
+                        onClick={() => setStatus(f.id, "resolved")}
+                        disabled={busyId === f.id}
                         className="btn-ghost inline-flex items-center gap-1.5"
                       >
                         <Check size={14} /> Resolve
                       </button>
                     )}
+                    <button
+                      onClick={() => remove(f.id)}
+                      disabled={busyId === f.id}
+                      className="btn-ghost inline-flex items-center gap-1.5 hover:!text-[var(--color-err)] hover:!border-[rgba(255,77,79,0.4)]"
+                      title="Delete feedback"
+                    >
+                      <Trash size={14} />
+                    </button>
                   </div>
                 </div>
               </div>

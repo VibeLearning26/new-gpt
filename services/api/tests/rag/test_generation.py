@@ -76,14 +76,20 @@ async def test_generate_success_with_citations():
 
 
 @pytest.mark.asyncio
-async def test_generate_insufficient_sources():
-    service = make_service([], ollama_response="should never be called")
+async def test_generate_no_sources_falls_back_to_general_chat():
+    service = make_service([], ollama_response="Hey! I'm VibeGPT, your AI student assistant.")
 
-    result = await service.generate("Anything?", uuid.uuid4(), marks=5)
+    result = await service.generate("hi", uuid.uuid4(), marks=5)
 
-    assert result.status == AnswerStatus.INSUFFICIENT_SOURCES
+    assert result.status == AnswerStatus.COMPLETED
+    assert result.answer == "Hey! I'm VibeGPT, your AI student assistant."
     assert result.sources == []
-    service.ollama.generate_with_usage.assert_not_awaited()
+    assert result.validation["mode"] == "general"
+    assert result.word_count > 0
+    # General chat uses the persona prompt, no retrieval citations.
+    call = service.ollama.generate_with_usage.await_args
+    assert call.kwargs["prompt"] == "hi"
+    assert "VibeGPT" in call.kwargs["system_prompt"]
 
 
 @pytest.mark.asyncio
@@ -109,6 +115,27 @@ async def test_generate_missing_citations_fails_validation():
 
     assert result.status == AnswerStatus.VALIDATION_FAILED
     assert result.validation["citations_valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_generate_passes_model_override_and_records_it():
+    chunks = [(make_chunk("Normalization reduces redundancy."), 0.9)]
+    service = make_service(chunks, ollama_response="Normalization reduces redundancy [S1].")
+    service.ollama.generate_with_usage.return_value = OllamaUsage(
+        content="Normalization reduces redundancy [S1].",
+        prompt_tokens=10,
+        completion_tokens=7,
+        model="mimo-v2.5-pro",
+    )
+
+    result = await service.generate(
+        "What is normalization?", uuid.uuid4(), marks=5, model="mimo-v2.5-pro"
+    )
+
+    service.ollama.generate_with_usage.assert_awaited_once()
+    assert service.ollama.generate_with_usage.await_args.kwargs["model"] == "mimo-v2.5-pro"
+    assert result.model_name == "mimo-v2.5-pro"
+    assert result.total_tokens == 17
 
 
 def test_build_citations_labels_are_sequential():

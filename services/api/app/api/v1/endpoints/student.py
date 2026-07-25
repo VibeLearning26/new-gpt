@@ -16,26 +16,39 @@ GET  /api/v1/student/profile
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.dependencies import DbSession, StudentUser
-from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.core.rate_limit import limiter
 from app.models.academic import Module, StudentSubjectPermission, Subject
 from app.models.document import Document, DocumentStatus
-from app.models.question import Feedback, QuestionLog, QuestionSource, SavedAnswer
+from app.models.question import (
+    ChatSession,
+    Feedback,
+    QuestionLog,
+    QuestionSource,
+    SavedAnswer,
+)
 from app.rag.generation import AnswerGenerationService
+from app.rag.llm import filter_gateway_models, get_model_catalog
+from app.rag.ollama_client import OllamaError
+from app.rag.router_client import RouterClient
 from app.schemas.academic import ModuleResponse, SubjectResponse
 from app.schemas.auth import UserProfile
 from app.schemas.common import MessageResponse
 from app.schemas.question import (
     AnswerResponse,
     AskQuestionRequest,
+    ChatSessionResponse,
     FeedbackRequest,
     HistoryItem,
+    RenameSessionRequest,
+    SessionMessage,
     SourceInfo,
     ValidationResult,
 )
@@ -203,6 +216,34 @@ async def get_subject_modules(subject_id: UUID, current_user: StudentUser, db: D
     return [ModuleResponse.model_validate(m) for m in modules]
 
 
+@router.get("/models")
+async def list_available_models(current_user: StudentUser):
+    """List LLM models the student can pick from (proxied — no gateway
+    credentials ever reach the client)."""
+    settings = get_settings()
+    if settings.LLM_PROVIDER != "router":
+        return {
+            "provider": "ollama",
+            "models": [{"id": settings.OLLAMA_MODEL, "owned_by": "ollama"}],
+            "default": settings.OLLAMA_MODEL,
+        }
+
+    try:
+        raw = await RouterClient().list_models()
+        default = await get_model_catalog().default_model()
+    except OllamaError as exc:
+        raise HTTPException(status_code=502, detail="Model gateway unavailable") from exc
+
+    return {
+        "provider": "router",
+        "models": [
+            {"id": m["id"], "owned_by": m.get("owned_by")}
+            for m in filter_gateway_models(raw)
+        ],
+        "default": default,
+    }
+
+
 @router.post("/answers", response_model=AnswerResponse)
 @limiter.limit("20/minute")
 async def ask_question(
@@ -218,7 +259,11 @@ async def ask_question(
     # Verify subject access
     await _require_subject_access(body.subject_id, current_user, db)
 
-    # Full RAG pipeline: retrieve → prompt → Ollama → validate
+    # Validate the requested model against the active provider's catalog.
+    if body.model is not None and not await get_model_catalog().is_available(body.model):
+        raise ValidationError(f"Model '{body.model}' is not available")
+
+    # Full RAG pipeline: retrieve → prompt → LLM → validate
     if body.module_id is not None:
         module_result = await db.execute(
             select(Module).where(
@@ -231,16 +276,49 @@ async def ask_question(
         if module_result.scalar_one_or_none() is None:
             raise NotFoundError("Module", "Module not found in the selected subject")
 
+    # Resolve the chat session — a new chat auto-creates one on its first
+    # question, titled from that question.
+    if body.session_id is not None:
+        session = await _load_owned_session(body.session_id, current_user, db)
+    else:
+        session = ChatSession(
+            user_id=current_user.id,
+            subject_id=body.subject_id,
+            title=body.question.strip()[:80] or "New chat",
+        )
+        db.add(session)
+        await db.flush()
+
+    # Conversation context so follow-ups are coherent and the assistant
+    # never re-introduces itself mid-session.
+    history: list[dict[str, str]] = []
+    if body.session_id is not None:
+        prior = await db.execute(
+            select(QuestionLog)
+            .where(
+                QuestionLog.session_id == session.id,
+                QuestionLog.answer.is_not(None),
+            )
+            .order_by(QuestionLog.created_at.desc())
+            .limit(6)
+        )
+        for log in reversed(prior.scalars().all()):
+            history.append({"role": "user", "content": log.question})
+            history.append({"role": "assistant", "content": log.answer or ""})
+
     service = AnswerGenerationService(db)
     result = await service.generate(
         question=body.question,
         subject_id=body.subject_id,
         marks=body.marks,
         module_id=body.module_id,
+        model=body.model,
+        history=history or None,
     )
 
     question_log = QuestionLog(
         user_id=current_user.id,
+        session_id=session.id,
         subject_id=body.subject_id,
         module_id=body.module_id,
         marks=body.marks,
@@ -257,6 +335,7 @@ async def ask_question(
         total_tokens=result.total_tokens,
         validation_result=result.validation or None,
     )
+    session.model_name = result.model_name
     db.add(question_log)
     await db.flush()
 
@@ -306,8 +385,172 @@ async def ask_question(
             citations_valid=result.validation.get("citations_valid", True),
             details=result.validation or None,
         ),
+        session_id=session.id,
         created_at=question_log.created_at,
     )
+
+
+# ── Chat sessions ────────────────────────────────────────────
+
+
+async def _load_owned_session(
+    session_id: UUID, current_user, db
+) -> ChatSession:
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == current_user.id,
+            ChatSession.archived_at.is_(None),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise NotFoundError("Chat session")
+    return session
+
+
+@router.get("/chat-sessions", response_model=list[ChatSessionResponse])
+async def list_chat_sessions(current_user: StudentUser, db: DbSession):
+    """List the student's chat sessions, most recent first."""
+    sessions = (
+        await db.execute(
+            select(ChatSession)
+            .where(
+                ChatSession.user_id == current_user.id,
+                ChatSession.archived_at.is_(None),
+            )
+            .order_by(ChatSession.updated_at.desc())
+        )
+    ).scalars().all()
+
+    counts: dict[UUID, int] = {}
+    if sessions:
+        rows = await db.execute(
+            select(QuestionLog.session_id, func.count())
+            .where(
+                QuestionLog.session_id.in_([s.id for s in sessions]),
+            )
+            .group_by(QuestionLog.session_id)
+        )
+        counts = {sid: int(n) for sid, n in rows.all()}
+
+    return [
+        ChatSessionResponse(
+            id=s.id,
+            title=s.title,
+            subject_id=s.subject_id,
+            model_name=s.model_name,
+            message_count=counts.get(s.id, 0),
+            created_at=s.created_at,
+            updated_at=s.updated_at,
+        )
+        for s in sessions
+    ]
+
+
+@router.get("/chat-sessions/{session_id}/messages", response_model=list[SessionMessage])
+async def get_session_messages(
+    session_id: UUID, current_user: StudentUser, db: DbSession
+):
+    """All exchanges of one session, oldest first."""
+    session = await _load_owned_session(session_id, current_user, db)
+
+    logs = (
+        (
+            await db.execute(
+                select(QuestionLog)
+                .where(QuestionLog.session_id == session.id)
+                .options(
+                    selectinload(QuestionLog.sources),
+                    selectinload(QuestionLog.subject),
+                    selectinload(QuestionLog.module),
+                    selectinload(QuestionLog.feedback_entry),
+                )
+                .order_by(QuestionLog.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    doc_ids = {src.document_id for log in logs for src in log.sources}
+    doc_names: dict[UUID, str] = {}
+    if doc_ids:
+        rows = await db.execute(
+            select(Document.id, Document.document_name).where(Document.id.in_(doc_ids))
+        )
+        doc_names = {did: name for did, name in rows.all()}
+
+    return [
+        SessionMessage(
+            id=log.id,
+            question=log.question,
+            answer=log.answer,
+            status=log.answer_status.value,
+            marks=log.marks,
+            model_name=log.model_name,
+            word_count=log.word_count,
+            processing_ms=log.processing_time_ms,
+            subject_name=log.subject.name if log.subject else None,
+            module_name=log.module.name if log.module else None,
+            feedback_rating=log.feedback_entry.rating if log.feedback_entry else None,
+            feedback_comment=log.feedback_entry.comment if log.feedback_entry else None,
+            sources=[
+                SourceInfo(
+                    label=src.label,
+                    document_id=src.document_id,
+                    document_name=doc_names.get(src.document_id, "Document"),
+                    page_number=src.page_number,
+                    slide_number=src.slide_number,
+                    sheet_name=None,
+                    preview=src.preview,
+                    relevance_score=src.relevance_score,
+                )
+                for src in log.sources
+            ],
+            created_at=log.created_at,
+        )
+        for log in logs
+    ]
+
+
+@router.patch("/chat-sessions/{session_id}", response_model=ChatSessionResponse)
+async def rename_chat_session(
+    session_id: UUID,
+    body: RenameSessionRequest,
+    current_user: StudentUser,
+    db: DbSession,
+):
+    session = await _load_owned_session(session_id, current_user, db)
+    session.title = body.title.strip()
+    await db.flush()
+    await db.refresh(session)
+    count = (
+        await db.execute(
+            select(func.count())
+            .select_from(QuestionLog)
+            .where(QuestionLog.session_id == session.id)
+        )
+    ).scalar() or 0
+    return ChatSessionResponse(
+        id=session.id,
+        title=session.title,
+        subject_id=session.subject_id,
+        model_name=session.model_name,
+        message_count=int(count),
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+@router.delete("/chat-sessions/{session_id}", response_model=MessageResponse)
+async def delete_chat_session(
+    session_id: UUID, current_user: StudentUser, db: DbSession
+):
+    session = await _load_owned_session(session_id, current_user, db)
+    session.archived_at = func.now()
+    await db.flush()
+    return MessageResponse(message="Chat session deleted")
 
 
 @router.get("/history", response_model=list[HistoryItem])
@@ -437,7 +680,8 @@ async def unsave_answer(question_id: UUID, current_user: StudentUser, db: DbSess
 
 @router.post("/feedback", response_model=MessageResponse)
 async def submit_feedback(body: FeedbackRequest, current_user: StudentUser, db: DbSession):
-    """Submit feedback/rating for an answer."""
+    """Submit feedback/rating for an answer. Re-submitting edits the
+    existing entry so students can correct a mistaken report."""
     # Verify ownership
     result = await db.execute(
         select(QuestionLog).where(
@@ -447,14 +691,26 @@ async def submit_feedback(body: FeedbackRequest, current_user: StudentUser, db: 
     if result.scalar_one_or_none() is None:
         raise NotFoundError("Question")
 
-    # Check for existing feedback
-    existing = await db.execute(
-        select(Feedback).where(
-            and_(Feedback.question_log_id == body.question_log_id, Feedback.user_id == current_user.id)
+    # Upsert: update the existing feedback if the student resends.
+    existing = (
+        await db.execute(
+            select(Feedback).where(
+                and_(
+                    Feedback.question_log_id == body.question_log_id,
+                    Feedback.user_id == current_user.id,
+                )
+            )
         )
-    )
-    if existing.scalar_one_or_none() is not None:
-        return MessageResponse(message="Feedback already submitted")
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.rating = body.rating
+        existing.comment = body.comment
+        # A corrected report goes back to the admin's queue.
+        existing.admin_response = None
+        existing.reviewed_at = None
+        existing.reviewed_by = None
+        await db.flush()
+        return MessageResponse(message="Feedback updated")
 
     db.add(
         Feedback(

@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.database.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.academic import Module, Subject
@@ -38,11 +38,37 @@ class AnswerStatus(enum.StrEnum):
     REGENERATED = "regenerated"
 
 
+class ChatSession(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
+    """A conversation thread between a student and VibeGPT."""
+
+    __tablename__ = "chat_sessions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subjects.id"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="New chat")
+    model_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Relationships
+    user: Mapped[User] = relationship()
+    subject: Mapped[Subject | None] = relationship()
+    messages: Mapped[list[QuestionLog]] = relationship(back_populates="session")
+
+    def __repr__(self) -> str:
+        return f"<ChatSession {self.id} title={self.title!r}>"
+
+
 class QuestionLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "question_logs"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True, index=True
     )
     subject_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subjects.id"), nullable=False, index=True
@@ -72,6 +98,7 @@ class QuestionLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # Relationships
     user: Mapped[User] = relationship(back_populates="question_logs")
+    session: Mapped[ChatSession | None] = relationship(back_populates="messages")
     subject: Mapped[Subject] = relationship()
     module: Mapped[Module | None] = relationship()
     sources: Mapped[list[QuestionSource]] = relationship(

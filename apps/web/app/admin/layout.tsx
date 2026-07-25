@@ -16,20 +16,24 @@ import {
   User,
   Logout2,
   Menu,
+  Sparkles,
+  Shield,
   type IconComponent,
 } from "reicon-react";
 import { getCurrentUser, isDemoMode, logout } from "@/lib/auth";
-import { hasRealSession } from "@/lib/api";
+import { apiLogout, hasRealSession } from "@/lib/api";
 
 const navItems: { icon: IconComponent; label: string; href: string; id: string }[] = [
   { icon: Graph, label: "Dashboard", href: "/admin", id: "dashboard" },
   { icon: Bolt, label: "Analytics", href: "/admin/analytics", id: "analytics" },
+  { icon: Sparkles, label: "Router", href: "/admin/router", id: "router" },
   { icon: Building, label: "Departments", href: "/admin/departments", id: "departments" },
   { icon: DocumentText, label: "Documents", href: "/admin/documents", id: "documents" },
   { icon: Ruler, label: "Answer format", href: "/admin/answer-rules", id: "rules" },
   { icon: BookOpen, label: "Subjects", href: "/admin/subjects", id: "subjects" },
   { icon: Users, label: "Users", href: "/admin/users", id: "users" },
   { icon: ChatRound, label: "Feedback", href: "/admin/feedback", id: "feedback" },
+  { icon: Shield, label: "Security", href: "/admin/security", id: "security" },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -53,7 +57,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const isActive = (href: string) =>
     href === "/admin" ? pathname === "/admin" : pathname.startsWith(href);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await apiLogout();
     logout();
     router.push("/login");
   };

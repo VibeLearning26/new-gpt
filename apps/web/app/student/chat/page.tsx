@@ -1,33 +1,71 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   BookOpen,
-  Target,
-  Warning,
   Check,
   Copy,
   Star,
-  Refresh,
-  Sparkles,
+  Warning,
   DocumentText,
 } from "reicon-react";
+
+// react-markdown + remark-gfm are heavy — load them only on the chat page,
+// only when an answer renders.
+const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 import {
   MARKS_OPTIONS,
   SEMESTER_OPTIONS,
   routeQuestion,
   generateMockAnswer,
-  simplifyAnswer,
   type StudyAnswer,
   type RouteResult,
 } from "@/lib/mockData";
-import { askQuestion, fetchApi, hasRealSession, type ApiAnswerResponse } from "@/lib/api";
+import {
+  askQuestion,
+  fetchApi,
+  hasRealSession,
+  studentApi,
+  type ApiAnswerResponse,
+  type ApiModel,
+  type ApiModule,
+  type ApiSessionMessage,
+} from "@/lib/api";
 import { Dropdown } from "@/components/Dropdown";
 
 interface RealSubject {
   id: string;
   name: string;
   code: string;
+}
+
+interface ThreadItem {
+  key: string;
+  logId: string | null;
+  question: string;
+  marks: number;
+  model: string | null;
+  answer: StudyAnswer | null;
+  status: "pending" | "done" | "error";
+  error: string | null;
+  feedbackRating: number | null;
+  feedbackComment: string | null;
+}
+
+function mapSources(sources: ApiSessionMessage["sources"]) {
+  return sources.map((s) => ({
+    tag: s.label,
+    document: s.document_name,
+    location:
+      s.page_number != null
+        ? `Page ${s.page_number}`
+        : s.slide_number != null
+          ? `Slide ${s.slide_number}`
+          : (s.sheet_name ?? "—"),
+    preview: s.preview ?? "",
+  }));
 }
 
 function apiAnswerToStudyAnswer(
@@ -43,41 +81,34 @@ function apiAnswerToStudyAnswer(
     body: api.answer ?? "No answer was generated.",
     wordCount: api.word_count ?? 0,
     processingMs: api.processing_ms ?? 0,
-    sources: api.sources.map((s) => ({
-      tag: s.label,
-      document: s.document_name,
-      location:
-        s.page_number != null
-          ? `Page ${s.page_number}`
-          : s.slide_number != null
-            ? `Slide ${s.slide_number}`
-            : (s.sheet_name ?? "—"),
-      preview: s.preview ?? "",
-    })),
+    sources: mapSources(api.sources),
+    model: api.model,
   };
 }
 
-function renderBody(body: string) {
-  // Minimal markdown-ish rendering for **bold**, bullets, and paragraphs.
-  return body.split("\n").map((line, i) => {
-    const trimmed = line.trim();
-    if (!trimmed) return <div key={i} className="h-2" />;
-    const html = trimmed
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>");
-    if (trimmed.startsWith("- ")) {
-      return (
-        <li
-          key={i}
-          className="ml-4 list-disc"
-          dangerouslySetInnerHTML={{ __html: html.slice(2) }}
-        />
-      );
-    }
-    return <p key={i} dangerouslySetInnerHTML={{ __html: html }} />;
-  });
+function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
+  return {
+    key: m.id,
+    logId: m.id,
+    question: m.question,
+    marks: m.marks,
+    model: m.model_name,
+    status: "done",
+    error: null,
+    feedbackRating: m.feedback_rating,
+    feedbackComment: m.feedback_comment,
+    answer: {
+      question: m.question,
+      marks: m.marks,
+      subject: m.subject_name ?? "—",
+      module: m.module_name ?? "Whole subject",
+      body: m.answer ?? "No answer was generated.",
+      wordCount: m.word_count ?? 0,
+      processingMs: m.processing_ms ?? 0,
+      sources: mapSources(m.sources),
+      model: m.model_name,
+    },
+  };
 }
 
 function AnswerSkeleton() {
@@ -90,17 +121,57 @@ function AnswerSkeleton() {
       <div className="h-2" />
       <div className="skeleton h-3 w-3/4" />
       <div className="skeleton h-3 w-5/6" />
-      <div className="flex gap-2 pt-2">
-        <div className="skeleton h-6 w-20" />
-        <div className="skeleton h-6 w-20" />
-      </div>
     </div>
   );
 }
 
 const semLabel = (sem: string) => `Semester ${sem.replace("S", "")}`;
 
-export default function ChatPage() {
+export default function ChatPageWrapper() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center">
+          <span className="loading-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+        </div>
+      }
+    >
+      <ChatPageRouter />
+    </Suspense>
+  );
+}
+
+/** Reads URL params and remounts the chat per session — a fresh thread on
+ * every session switch, exactly like dedicated chat apps. */
+function ChatPageRouter() {
+  const searchParams = useSearchParams();
+  const sessionParam = searchParams.get("session");
+  const subjectParam = searchParams.get("subject");
+  const moduleParam = searchParams.get("module");
+  return (
+    <ChatPage
+      key={sessionParam ?? "new"}
+      sessionParam={sessionParam}
+      subjectParam={subjectParam}
+      moduleParam={moduleParam}
+    />
+  );
+}
+
+function ChatPage({
+  sessionParam,
+  subjectParam,
+  moduleParam,
+}: {
+  sessionParam: string | null;
+  subjectParam: string | null;
+  moduleParam: string | null;
+}) {
+  const router = useRouter();
   const [marks, setMarks] = useState(5);
   const [customMarksOpen, setCustomMarksOpen] = useState(false);
   const [customMarksText, setCustomMarksText] = useState("15");
@@ -109,79 +180,165 @@ export default function ChatPage() {
   );
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
-  const [answer, setAnswer] = useState<StudyAnswer | null>(null);
+  const [thread, setThread] = useState<ThreadItem[]>([]);
+  const [threadLoaded, setThreadLoaded] = useState(!sessionParam);
   const [detected, setDetected] = useState<RouteResult | null>(null);
-  const [showSources, setShowSources] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [openSources, setOpenSources] = useState<Set<string>>(new Set());
+  const [feedbackOpen, setFeedbackOpen] = useState<Set<string>>(new Set());
+  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [runError, setRunError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Real backend subjects the student can access (empty in demo mode).
+
   const [realSubjects, setRealSubjects] = useState<RealSubject[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [chosenSubjectId, setChosenSubjectId] = useState<string | null>(null);
+  const [modules, setModules] = useState<ApiModule[]>([]);
+  const [models, setModels] = useState<ApiModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [modelProvider, setModelProvider] = useState<"ollama" | "router">("ollama");
+  const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
+
+  const activeSessionId = sessionParam ?? createdSessionId;
+  const selectedSubjectId = chosenSubjectId ?? subjectParam ?? realSubjects[0]?.id ?? "";
+  const activeModule = modules.find((m) => m.id === moduleParam) ?? null;
+
+  const refreshSessions = useCallback(() => {
+    window.dispatchEvent(new Event("vibegpt:sessions-changed"));
+  }, []);
+
+  // Load the thread when opening an existing session.
+  useEffect(() => {
+    if (!sessionParam || !hasRealSession()) return;
+    let active = true;
+    studentApi
+      .getSessionMessages(sessionParam)
+      .then((msgs) => {
+        if (!active) return;
+        setThread(msgs.map(messageToThreadItem));
+        setThreadLoaded(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setThread([]);
+        setThreadLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionParam]);
+
+  useEffect(() => {
+    if (!hasRealSession() || !selectedSubjectId) return;
+    let active = true;
+    studentApi
+      .listModules(selectedSubjectId)
+      .then((mods) => {
+        if (active) setModules(mods);
+      })
+      .catch(() => {
+        if (active) setModules([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedSubjectId]);
 
   useEffect(() => {
     if (!hasRealSession()) return;
     fetchApi("/api/v1/student/subjects")
       .then((subs: RealSubject[]) => {
         setRealSubjects(subs);
-        setSelectedSubjectId((current) => current || subs[0]?.id || "");
       })
       .catch(() => setRealSubjects([]));
+    studentApi
+      .listModels()
+      .then((res) => {
+        setModels(res.models);
+        setModelProvider(res.provider);
+        setSelectedModel((current) => current || res.default);
+      })
+      .catch(() => setModels([]));
   }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [answer, loading]);
+  }, [thread, loading]);
 
   const run = async (q: string, m: number) => {
     const realSession = hasRealSession();
     const route = realSession ? null : routeQuestion(q, semester);
     setDetected(route);
     setLoading(true);
-    setShowSources(false);
-    setCopied(false);
-    setSaved(false);
     setRunError(null);
 
-    // Grounded mode always queries the subject explicitly selected by the student.
+    const itemKey = `local-${crypto.randomUUID()}`;
+    const pendingItem: ThreadItem = {
+      key: itemKey,
+      logId: null,
+      question: q,
+      marks: m,
+      model: realSession ? selectedModel || null : null,
+      answer: null,
+      status: "pending",
+      error: null,
+      feedbackRating: null,
+      feedbackComment: null,
+    };
+    setThread((prev) => [...prev, pendingItem]);
+
+    const patchItem = (patch: Partial<ThreadItem>) =>
+      setThread((prev) => prev.map((t) => (t.key === itemKey ? { ...t, ...patch } : t)));
+
     if (realSession) {
       const real = realSubjects.find((subject) => subject.id === selectedSubjectId);
       if (real) {
         try {
           const api = await askQuestion({
             subject_id: real.id,
-            module_id: null,
+            module_id: activeModule?.id ?? null,
             marks: m,
             question: q,
+            model: selectedModel || null,
+            session_id: activeSessionId,
           });
-          setAnswer(
-            apiAnswerToStudyAnswer(api, real.name, "Whole subject"),
-          );
+          patchItem({
+            logId: api.id,
+            model: api.model,
+            answer: apiAnswerToStudyAnswer(api, real.name, activeModule?.name ?? "Whole subject"),
+            status: "done",
+          });
+          if (!activeSessionId && api.session_id) {
+            setCreatedSessionId(api.session_id);
+            refreshSessions();
+            router.replace(`/student/chat?session=${api.session_id}`);
+          } else {
+            refreshSessions();
+          }
           setLoading(false);
           return;
         } catch (error) {
-          setRunError(
-            error instanceof Error
-              ? error.message
-              : "The grounded answer service is unavailable.",
-          );
+          patchItem({
+            status: "error",
+            error:
+              error instanceof Error ? error.message : "The grounded answer service is unavailable.",
+          });
           setLoading(false);
           return;
         }
       }
-      setRunError(
-        "Select an accessible subject first, or ask an admin to assign your department and semester.",
-      );
+      patchItem({
+        status: "error",
+        error: "Select an accessible subject first, or ask an admin to publish material for it.",
+      });
       setLoading(false);
       return;
     }
 
+    // Demo mode (no backend session) — mock answer.
     const result = route
       ? generateMockAnswer(q, m, route.subject.name, route.module.name)
       : generateMockAnswer(q, m, "General", "General");
     await new Promise((r) => setTimeout(r, 1100));
-    setAnswer(result);
+    patchItem({ answer: result, status: "done" });
     setLoading(false);
   };
 
@@ -193,35 +350,86 @@ export default function ChatPage() {
     setQuestion("");
   };
 
-  const regenerate = () => answer && run(answer.question, answer.marks);
-  const simplify = async () => {
-    if (!answer) return;
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setAnswer(simplifyAnswer(answer));
-    setLoading(false);
+  const copy = (body: string) => {
+    navigator.clipboard.writeText(body.replace(/\*\*/g, ""));
   };
-  const copy = () => {
-    if (!answer) return;
-    navigator.clipboard.writeText(answer.body.replace(/\*\*/g, ""));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+
+  const toggleSources = (key: string) => {
+    setOpenSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
+
+  const toggleFeedback = (key: string) => {
+    setFeedbackOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSave = async (item: ThreadItem) => {
+    if (!item.logId) return;
+    const isSaved = savedIds.has(item.logId);
+    try {
+      if (isSaved) await studentApi.unsaveAnswer(item.logId);
+      else await studentApi.saveAnswer(item.logId);
+      setSavedIds((prev) => {
+        const next = new Set(prev);
+        if (isSaved) next.delete(item.logId!);
+        else next.add(item.logId!);
+        return next;
+      });
+    } catch {
+      setRunError("Could not update the saved state.");
+    }
+  };
+
+  const showEmpty = threadLoaded && thread.length === 0 && !loading;
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <header className="flex items-center justify-between px-5 sm:px-8 h-16 border-b border-line">
-        <div>
-          <h1 className="text-base font-semibold">Ask a question</h1>
-          <p className="text-xs text-faint">
+      <header className="flex items-center justify-between gap-3 px-5 sm:px-8 h-16 border-b border-line">
+        <div className="min-w-0">
+          <h1 className="text-base font-semibold truncate">
+            {activeSessionId ? "Conversation" : "Ask a question"}
+          </h1>
+          <p className="text-xs text-faint truncate">
             {realSubjects.length > 0
               ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.name
               : semLabel(semester)}
-            {detected ? ` · ${detected.subject.name}` : " · grounded study mode"}
+            {activeModule
+              ? ` · ${activeModule.name}`
+              : detected
+                ? ` · ${detected.subject.name}`
+                : " · grounded study mode"}
           </p>
         </div>
-        <span className="badge badge-red hidden sm:inline-flex">● Grounded mode</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {models.length > 0 && (
+            <Dropdown
+              variant="chip"
+              ariaLabel="Model"
+              value={selectedModel}
+              onChange={setSelectedModel}
+              options={models.map((m) => ({
+                value: m.id,
+                label: m.owned_by ? `${m.id} · ${m.owned_by}` : m.id,
+              }))}
+            />
+          )}
+          <span
+            className="badge badge-red hidden sm:inline-flex"
+            title={`Provider: ${modelProvider}`}
+          >
+            ● Grounded mode
+          </span>
+        </div>
       </header>
 
       {/* Conversation area */}
@@ -229,22 +437,28 @@ export default function ChatPage() {
         <div className="max-w-3xl mx-auto px-5 sm:px-8 py-8">
           {runError && (
             <div className="panel p-4 mb-5 border border-err/40" role="alert">
-              <p className="text-sm font-semibold text-err">Grounded answer unavailable</p>
+              <p className="text-sm font-semibold text-err">Heads up</p>
               <p className="text-xs text-muted mt-1">{runError}</p>
-              <p className="text-xs text-faint mt-1">
-                No mock answer was substituted because you are signed in to grounded mode.
-              </p>
             </div>
           )}
-          {!answer && !loading && (
+
+          {!threadLoaded && (
+            <div className="space-y-6">
+              <div className="skeleton h-16 w-2/3 ml-auto" />
+              <div className="skeleton h-40 w-full" />
+            </div>
+          )}
+
+          {showEmpty && (
             <div className="text-center py-16 fade-up">
               <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-panel border border-line glow-ring flex items-center justify-center text-brand-accent">
                 <BookOpen size={28} />
               </div>
               <h2 className="text-2xl font-bold mb-2">What would you like to study?</h2>
               <p className="text-sm text-muted max-w-md mx-auto">
-                Pick your semester and marks below, then ask. VibeGPT figures out which
-                subject your question belongs to and writes a structured, cited answer.
+                Pick a subject and marks below, then ask. VibeGPT answers from your
+                college materials when it has them, and from its own knowledge when it
+                doesn&apos;t.
               </p>
               <div className="mt-8 grid sm:grid-cols-2 gap-3 max-w-lg mx-auto text-left">
                 {[
@@ -265,125 +479,152 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Question bubble */}
-          {(answer || loading) && (
-            <div className="flex justify-end mb-6 fade-up">
-              <div className="bubble-user max-w-[85%]">
-                <p className="text-[15px]">{answer?.question ?? (question || "…")}</p>
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
-                  <span className="badge badge-neutral">{answer?.marks ?? marks} marks</span>
-                  <span className="badge badge-neutral">
-                    {realSubjects.length > 0
-                      ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.code
-                      : semLabel(semester)}
-                  </span>
-                  {detected && (
-                    <span className="text-[11px] text-faint">
-                      {detected.subject.icon} {detected.subject.code}
+          {/* Thread */}
+          {thread.map((item) => (
+            <div key={item.key} className="mb-6 fade-up">
+              {/* User bubble */}
+              <div className="flex justify-end mb-4">
+                <div className="bubble-user max-w-[85%]">
+                  <p className="text-[15px] whitespace-pre-wrap">{item.question}</p>
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <span className="badge badge-neutral">{item.marks} marks</span>
+                    {item.model && <span className="badge badge-neutral">{item.model}</span>}
+                    <span className="badge badge-neutral">
+                      {realSubjects.length > 0
+                        ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.code
+                        : semLabel(semester)}
                     </span>
-                  )}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
 
-          {loading && <AnswerSkeleton />}
+              {/* Assistant */}
+              {item.status === "pending" && <AnswerSkeleton />}
 
-          {/* Answer */}
-          {answer && !loading && (
-            <div className="fade-up">
-              {/* Detected subject banner */}
-              {detected && (
-                <div className="mb-3">
-                  {detected.confidence === "high" ? (
-                    <span className="badge badge-success inline-flex items-center gap-1.5">
-                      <Target size={13} /> Detected subject: {detected.subject.name} · {detected.module.name}
-                    </span>
-                  ) : (
-                    <span className="badge badge-warning inline-flex items-center gap-1.5">
-                      <Warning size={13} /> Couldn&apos;t confidently match a subject — showing best guess:{" "}
-                      {detected.subject.name}
-                    </span>
-                  )}
+              {item.status === "error" && (
+                <div className="panel p-4 border border-err/40" role="alert">
+                  <p className="text-sm font-semibold text-err">Couldn&apos;t answer that</p>
+                  <p className="text-xs text-muted mt-1">{item.error}</p>
                 </div>
               )}
 
-              <div className="flex items-center gap-2.5 mb-3">
-                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#e50914] to-[#ff2a2a] flex items-center justify-center text-xs font-extrabold text-white">
-                  V
-                </div>
-                <span className="text-sm font-semibold">VibeGPT</span>
-                <span className="text-[11px] text-faint">
-                  {answer.wordCount} words · {answer.processingMs}ms
-                </span>
-              </div>
-
-              <div className="answer-card">{renderBody(answer.body)}</div>
-
-              {/* Actions */}
-              <div className="flex flex-wrap items-center gap-2 mt-3">
-                <button onClick={copy} className="btn-ghost inline-flex items-center gap-1.5">
-                  {copied ? (
-                    <>
-                      <Check size={14} /> Copied
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={14} /> Copy
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={() => setSaved((s) => !s)}
-                  className="btn-ghost inline-flex items-center gap-1.5"
-                  style={saved ? { color: "#ff2a2a", borderColor: "rgba(229,9,20,0.5)" } : undefined}
-                >
-                  <Star size={14} weight={saved ? "Filled" : "Outline"} />
-                  {saved ? "Saved" : "Save"}
-                </button>
-                <button onClick={regenerate} className="btn-ghost inline-flex items-center gap-1.5">
-                  <Refresh size={14} /> Regenerate
-                </button>
-                <button onClick={simplify} className="btn-ghost inline-flex items-center gap-1.5">
-                  <Sparkles size={14} /> Simplify
-                </button>
-                <button
-                  onClick={() => setShowSources((v) => !v)}
-                  className="btn-ghost inline-flex items-center gap-1.5 ml-auto"
-                >
-                  <DocumentText size={14} /> Sources ({answer.sources.length})
-                </button>
-              </div>
-
-              {/* Sources */}
-              {showSources && (
-                <div className="mt-4 space-y-2 fade-in">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-faint">
-                    Source references
-                  </p>
-                  {answer.sources.map((src) => (
-                    <div key={src.tag} className="card p-3.5">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="source-tag">{src.tag}</span>
-                        <span className="text-sm font-medium">{src.document}</span>
-                        <span className="badge badge-neutral ml-auto">{src.location}</span>
-                      </div>
-                      <p className="text-xs text-muted italic">{src.preview}</p>
+              {item.status === "done" && item.answer && (
+                <div>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#e50914] to-[#ff2a2a] flex items-center justify-center text-xs font-extrabold text-white">
+                      V
                     </div>
-                  ))}
+                    <span className="text-sm font-semibold">VibeGPT</span>
+                    <span className="text-[11px] text-faint">
+                      {item.answer.wordCount} words · {item.answer.processingMs}ms
+                      {item.answer.sources.length > 0 &&
+                        ` · ${item.answer.sources.length} sources`}
+                    </span>
+                  </div>
+
+                  <div className="answer-card">
+                    <Markdown text={item.answer.body} />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <CopyButton text={item.answer.body} onCopy={copy} />
+                    {item.logId && (
+                      <button
+                        onClick={() => toggleSave(item)}
+                        className="btn-ghost inline-flex items-center gap-1.5"
+                        style={
+                          savedIds.has(item.logId)
+                            ? { color: "#ff2a2a", borderColor: "rgba(229,9,20,0.5)" }
+                            : undefined
+                        }
+                      >
+                        <Star size={14} weight={savedIds.has(item.logId) ? "Filled" : "Outline"} />
+                        {savedIds.has(item.logId) ? "Saved" : "Save"}
+                      </button>
+                    )}
+                    {item.logId &&
+                      (item.feedbackRating ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="btn-ghost inline-flex items-center gap-1.5 !cursor-default"
+                            style={{ color: "#ff2a2a", borderColor: "rgba(229,9,20,0.5)" }}
+                          >
+                            <Star size={14} weight="Filled" />
+                            Rated {item.feedbackRating}/5 · sent
+                          </span>
+                          <button
+                            onClick={() => toggleFeedback(item.key)}
+                            className="btn-ghost"
+                            title="Edit your feedback"
+                          >
+                            Edit
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => toggleFeedback(item.key)}
+                          className="btn-ghost inline-flex items-center gap-1.5"
+                        >
+                          <Warning size={14} /> Feedback
+                        </button>
+                      ))}
+                    {item.answer.sources.length > 0 && (
+                      <button
+                        onClick={() => toggleSources(item.key)}
+                        className="btn-ghost inline-flex items-center gap-1.5 ml-auto"
+                      >
+                        <DocumentText size={14} /> Sources ({item.answer.sources.length})
+                      </button>
+                    )}
+                  </div>
+
+                  {item.logId && feedbackOpen.has(item.key) && (
+                    <FeedbackForm
+                      logId={item.logId}
+                      initialRating={item.feedbackRating ?? 0}
+                      initialComment={item.feedbackComment ?? ""}
+                      onDone={(rating, comment) => {
+                        setThread((prev) =>
+                          prev.map((t) =>
+                            t.key === item.key
+                              ? { ...t, feedbackRating: rating, feedbackComment: comment }
+                              : t,
+                          ),
+                        );
+                        toggleFeedback(item.key);
+                      }}
+                      onCancel={() => toggleFeedback(item.key)}
+                    />
+                  )}
+
+                  {openSources.has(item.key) && (
+                    <div className="mt-4 space-y-2 fade-in">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-faint">
+                        Source references
+                      </p>
+                      {item.answer.sources.map((src) => (
+                        <div key={src.tag} className="card p-3.5">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="source-tag">{src.tag}</span>
+                            <span className="text-sm font-medium">{src.document}</span>
+                            <span className="badge badge-neutral ml-auto">{src.location}</span>
+                          </div>
+                          <p className="text-xs text-muted italic">{src.preview}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
+          ))}
         </div>
       </div>
 
       {/* Sticky composer */}
       <div className="border-t border-line bg-bg/60 backdrop-blur px-5 sm:px-8 py-4">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
-          {/* Selectors */}
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            {/* Subject in grounded mode; semester in demo mode */}
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] text-faint mr-1">
                 {realSubjects.length > 0 ? "Subject" : "Semester"}
@@ -394,7 +635,9 @@ export default function ChatPage() {
                   direction="up"
                   ariaLabel="Subject"
                   value={selectedSubjectId}
-                  onChange={setSelectedSubjectId}
+                  onChange={(v) => {
+                    setChosenSubjectId(v);
+                  }}
                   options={realSubjects.map((subject) => ({
                     value: subject.id,
                     label: `${subject.code} · ${subject.name}`,
@@ -461,7 +704,6 @@ export default function ChatPage() {
             </div>
           </div>
 
-          {/* Input */}
           <div className="composer flex items-end gap-2 p-2.5">
             <textarea
               value={question}
@@ -491,9 +733,117 @@ export default function ChatPage() {
             </button>
           </div>
           <p className="text-center text-[11px] text-faint mt-2">
-            Answers use only admin-approved college materials · Enter to send, Shift+Enter for a new line
+            Subject answers prioritise admin-approved materials · general questions use the
+            model&apos;s own knowledge · Enter to send, Shift+Enter for a new line
           </p>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function CopyButton({ text, onCopy }: { text: string; onCopy: (text: string) => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        onCopy(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      }}
+      className="btn-ghost inline-flex items-center gap-1.5"
+    >
+      {copied ? (
+        <>
+          <Check size={14} /> Copied
+        </>
+      ) : (
+        <>
+          <Copy size={14} /> Copy
+        </>
+      )}
+    </button>
+  );
+}
+
+function FeedbackForm({
+  logId,
+  initialRating,
+  initialComment,
+  onDone,
+  onCancel,
+}: {
+  logId: string;
+  initialRating: number;
+  initialComment: string;
+  onDone: (rating: number, comment: string | null) => void;
+  onCancel: () => void;
+}) {
+  const [rating, setRating] = useState(initialRating);
+  const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState(initialComment);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isEdit = initialRating > 0;
+
+  const submit = async () => {
+    if (!rating || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await studentApi.submitFeedback({
+        question_log_id: logId,
+        rating,
+        comment: comment.trim() || null,
+      });
+      onDone(rating, comment.trim() || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send feedback");
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 card p-4 fade-in">
+      <p className="text-[13px] font-semibold mb-2.5">
+        {isEdit ? "Edit your feedback" : "Rate this answer / report a problem"}
+      </p>
+      <div className="flex items-center gap-1 mb-3">
+        {[1, 2, 3, 4, 5].map((star) => (
+          <button
+            key={star}
+            type="button"
+            aria-label={`${star} star${star > 1 ? "s" : ""}`}
+            onMouseEnter={() => setHover(star)}
+            onMouseLeave={() => setHover(0)}
+            onClick={() => setRating(star)}
+            className="transition-transform hover:scale-110 active:scale-95"
+          >
+            <Star
+              size={22}
+              weight={(hover || rating) >= star ? "Filled" : "Outline"}
+              color={(hover || rating) >= star ? "#ff2a2a" : "#3d3d42"}
+            />
+          </button>
+        ))}
+        {rating > 0 && <span className="text-xs text-faint ml-2">{rating}/5</span>}
+      </div>
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        rows={3}
+        maxLength={2000}
+        placeholder="What went wrong, or what could be better? (optional, but helps for reports)"
+        className="input resize-none text-sm"
+      />
+      {error && <p className="text-xs text-err mt-2">{error}</p>}
+      <div className="flex items-center gap-2 mt-3">
+        <button onClick={submit} disabled={!rating || sending} className="btn-primary">
+          {sending ? "Sending..." : isEdit ? "Update feedback" : "Send feedback"}
+        </button>
+        <button onClick={onCancel} className="btn-ghost" disabled={sending}>
+          Cancel
+        </button>
       </div>
     </div>
   );

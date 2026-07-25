@@ -14,6 +14,8 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -47,8 +49,7 @@ export default function LoginPage() {
         return;
       }
 
-      const token = await apiLogin(email, password);
-      sessionStorage.setItem("access_token", token.access_token);
+      const token = await apiLogin(email, password, mfaRequired ? mfaCode : undefined);
       const me = await fetchApi("/api/v1/auth/me");
       sessionStorage.setItem(
         "vibegpt_user",
@@ -66,12 +67,17 @@ export default function LoginPage() {
       );
       router.push(token.role === "student" ? "/student/chat" : "/admin/documents");
     } catch (loginError) {
-      logout();
-      setError(
+      const message =
         loginError instanceof Error
           ? loginError.message
-          : "Unable to sign in. Check that the backend is running.",
-      );
+          : "Unable to sign in. Check that the backend is running.";
+      if (message.includes("mfa_required")) {
+        setMfaRequired(true);
+        setError("Enter the 6-digit code from your authenticator app (or a recovery code).");
+      } else {
+        logout();
+        setError(message);
+      }
       setLoading(false);
     }
   };
@@ -170,6 +176,23 @@ export default function LoginPage() {
                   autoComplete="current-password"
                 />
               </div>
+
+              {mfaRequired && (
+                <div className="fade-in">
+                  <label htmlFor="mfa" className="field-label">Two-factor code</label>
+                  <input
+                    id="mfa"
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value.replace(/\s/g, ""))}
+                    className="input font-mono tracking-widest"
+                    placeholder="123456 or recovery code"
+                    autoComplete="one-time-code"
+                  />
+                </div>
+              )}
 
               <button type="submit" disabled={loading} className="btn-primary w-full h-12">
                 {loading ? (

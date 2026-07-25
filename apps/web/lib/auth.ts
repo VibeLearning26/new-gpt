@@ -2,6 +2,8 @@
 // Mirrors the mobile app's demo-credential approach so the platform
 // runs standalone for demos.
 
+import { setAccessToken } from "@/lib/api";
+
 export type Role = "student" | "admin";
 
 export interface DemoUser {
@@ -31,7 +33,7 @@ export function mockLogin(email: string, password: string): DemoUser | null {
   const entry = DEMO_ACCOUNTS[email.trim().toLowerCase()];
   if (!entry || entry.password !== password) return null;
   if (typeof window !== "undefined") {
-    sessionStorage.setItem("access_token", `demo-token-${entry.user.role}`);
+    setAccessToken(`demo-token-${entry.user.role}`);
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(entry.user));
   }
   return entry.user;
@@ -49,8 +51,10 @@ export function getCurrentUser(): DemoUser | null {
 }
 
 export function logout() {
+  // Tokens live in memory; clear them plus the non-secret profile cache.
+  // The HttpOnly refresh cookie is revoked by callers via apiLogout().
+  setAccessToken(null);
   if (typeof window !== "undefined") {
-    sessionStorage.removeItem("access_token");
     sessionStorage.removeItem(STORAGE_KEY);
   }
 }

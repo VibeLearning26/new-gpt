@@ -1,9 +1,19 @@
 # VibeGPT – Local Development Docker Compose
 # Usage: docker compose up -d
+#
+# SECURITY: service ports are bound to 127.0.0.1 (loopback) only, so the
+# database, LLM, API and web are never reachable from the LAN/internet.
+# The LLM gateway is likewise loopback-only. For the production topology
+# (Caddy as the only public entry point) use docker-compose.prod.yml.
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
 
 services:
   # ── PostgreSQL + pgvector ──────────────────────────────────
   postgres:
+    <<: *hardened
     image: pgvector/pgvector:pg16
     container_name: vibegpt-postgres
     environment:
@@ -11,7 +21,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-vibegpt}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibegpt_dev_password}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,10 +33,11 @@ services:
 
   # ── Ollama LLM ────────────────────────────────────────────
   ollama:
+    <<: *hardened
     image: ollama/ollama:latest
     container_name: vibegpt-ollama
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -37,6 +48,7 @@ services:
     restart: unless-stopped
 
   ollama-init:
+    <<: *hardened
     image: ollama/ollama:latest
     container_name: vibegpt-ollama-init
     environment:
@@ -48,8 +60,32 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # ── LLM Gateway Router (OmniRoute, OpenAI-compatible) ─────
+  # Dashboard: http://localhost:20128/dashboard — add upstream provider
+  # keys (Xiaomi MiMo, ...) there. Bound to 127.0.0.1 only: the dashboard
+  # and API surface never leave this host.
+  router:
+    <<: *hardened
+    image: node:20-slim
+    container_name: vibegpt-router
+    command: sh -c "npm install -g omniroute@3 && omniroute serve --no-open"
+    ports:
+      - "127.0.0.1:20128:20128" # Internal host access only
+    environment:
+      - PORT=20128
+    volumes:
+      - router_data:/root/.omniroute
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:20128/v1/models').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+
   # ── Next.js Web App ───────────────────────────────────────
   web:
+    <<: *hardened
     build:
       context: ../apps/web
       dockerfile: Dockerfile
@@ -58,7 +94,7 @@ services:
         NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
     container_name: vibegpt-web
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy
@@ -66,6 +102,7 @@ services:
 
   # ── FastAPI Backend ────────────────────────────────────────
   api:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -74,9 +111,11 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
+      ROUTER_BASE_URL: http://router:20128/v1
+      ROUTER_DASHBOARD_URL: http://localhost:20128/dashboard
       PYTHONPATH: /app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ../services/api:/app
       - uploads:/app/uploads
@@ -96,6 +135,7 @@ services:
 
   # ── Document Worker ────────────────────────────────────────
   worker:
+    <<: *hardened
     build:
       context: ../services/api
       dockerfile: Dockerfile
@@ -118,6 +158,8 @@ volumes:
   pgdata:
     driver: local
   ollama_data:
+    driver: local
+  router_data:
     driver: local
   uploads:
     driver: local

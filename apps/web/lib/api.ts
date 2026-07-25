@@ -1,14 +1,30 @@
 let redirectingToLogin = false;
 
+// Access tokens live in memory ONLY — never in web storage, so XSS cannot
+// steal them. A non-secret sessionStorage marker records that a real session
+// exists so pages don't fall back to demo mode across reloads; the actual
+// token is restored silently via the HttpOnly refresh cookie.
+let accessToken: string | null = null;
+const SESSION_MARKER = "vibegpt_session";
+
+export function setAccessToken(token: string | null): void {
+  accessToken = token;
+  if (typeof window === "undefined") return;
+  if (token && !token.startsWith("demo-token-")) {
+    sessionStorage.setItem(SESSION_MARKER, "real");
+  } else if (!token) {
+    sessionStorage.removeItem(SESSION_MARKER);
+  }
+}
+
 function readAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-  const token = sessionStorage.getItem("access_token");
-  return token && !token.startsWith("demo-token-") ? token : null;
+  return accessToken && !accessToken.startsWith("demo-token-") ? accessToken : null;
 }
 
 export function clearAuthSession(): void {
+  accessToken = null;
   if (typeof window === "undefined") return;
-  sessionStorage.removeItem("access_token");
+  sessionStorage.removeItem(SESSION_MARKER);
   sessionStorage.removeItem("vibegpt_user");
 }
 
@@ -22,16 +38,51 @@ function handleUnauthorized(errorDetail: string): void {
   }
 }
 
-async function requestApi(endpoint: string, options: RequestInit = {}): Promise<Response> {
+function apiUrlBase(): { apiUrl: string; normalize: (endpoint: string) => string } {
   const configuredUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const apiUrl = configuredUrl.replace(/\/+$/, "");
-  const normalizedEndpoint =
-    apiUrl.endsWith("/api/v1") && endpoint.startsWith("/api/v1")
-      ? endpoint.slice("/api/v1".length)
-      : endpoint;
-  const token = readAccessToken();
+  return {
+    apiUrl,
+    normalize: (endpoint: string) =>
+      apiUrl.endsWith("/api/v1") && endpoint.startsWith("/api/v1")
+        ? endpoint.slice("/api/v1".length)
+        : endpoint,
+  };
+}
+
+// Single-flight silent refresh via the HttpOnly cookie.
+let refreshPromise: Promise<string | null> | null = null;
+
+export function refreshSession(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const { apiUrl, normalize } = apiUrlBase();
+        const res = await fetch(`${apiUrl}${normalize("/api/v1/auth/refresh")}`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { access_token: string };
+        setAccessToken(data.access_token);
+        return data.access_token;
+      } catch {
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
+
+async function requestApi(endpoint: string, options: RequestInit = {}): Promise<Response> {
+  const { apiUrl, normalize } = apiUrlBase();
+  const normalizedEndpoint = normalize(endpoint);
+  const url = `${apiUrl}${normalizedEndpoint}`;
 
   const headers = new Headers(options.headers);
+  const token = readAccessToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
@@ -39,11 +90,28 @@ async function requestApi(endpoint: string, options: RequestInit = {}): Promise<
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${apiUrl}${normalizedEndpoint}`, {
-    ...options,
-    headers,
-    credentials: options.credentials ?? "include",
-  });
+  const doFetch = (h: Headers) =>
+    fetch(url, { ...options, headers: h, credentials: options.credentials ?? "include" });
+
+  let response = await doFetch(headers);
+
+  // Expired access token → one silent refresh + retry (not for auth routes
+  // or demo sessions).
+  if (
+    response.status === 401 &&
+    !normalizedEndpoint.startsWith("/auth/") &&
+    token
+  ) {
+    const newToken = await refreshSession();
+    if (newToken) {
+      const retryHeaders = new Headers(options.headers);
+      retryHeaders.set("Authorization", `Bearer ${newToken}`);
+      if (!retryHeaders.has("Content-Type") && !(options.body instanceof FormData)) {
+        retryHeaders.set("Content-Type", "application/json");
+      }
+      response = await doFetch(retryHeaders);
+    }
+  }
 
   if (!response.ok) {
     let errorDetail = "API Request Failed";
@@ -100,17 +168,61 @@ export interface ApiAnswerResponse {
   sources: ApiSourceInfo[];
   model: string | null;
   processing_ms: number | null;
+  session_id: string | null;
   created_at: string;
+}
+
+export interface ApiChatSession {
+  id: string;
+  title: string;
+  subject_id: string | null;
+  model_name: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiSessionMessage {
+  id: string;
+  question: string;
+  answer: string | null;
+  status: string;
+  marks: number;
+  model_name: string | null;
+  word_count: number | null;
+  processing_ms: number | null;
+  subject_name: string | null;
+  module_name: string | null;
+  sources: ApiSourceInfo[];
+  feedback_rating: number | null;
+  feedback_comment: string | null;
+  created_at: string;
+}
+
+export interface ApiAdminFeedback {
+  id: string;
+  student_name: string;
+  question: string;
+  answer_preview: string | null;
+  subject_name: string | null;
+  marks: number;
+  rating: number;
+  comment: string | null;
+  status: "new" | "reviewed" | "resolved";
+  admin_response: string | null;
+  created_at: string;
+  reviewed_at: string | null;
 }
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** True when we hold a real backend session (not the demo mock token). */
+/** True when a real backend session exists (in-memory token, or the
+ * non-secret marker survives a reload while the cookie restores the token). */
 export function hasRealSession(): boolean {
+  if (accessToken && !accessToken.startsWith("demo-token")) return true;
   if (typeof window === "undefined") return false;
-  const token = sessionStorage.getItem("access_token");
-  return !!token && !token.startsWith("demo-token");
+  return sessionStorage.getItem(SESSION_MARKER) === "real";
 }
 
 export function isUuid(value: string): boolean {
@@ -123,6 +235,8 @@ export async function askQuestion(params: {
   module_id?: string | null;
   marks: number;
   question: string;
+  model?: string | null;
+  session_id?: string | null;
 }): Promise<ApiAnswerResponse> {
   return fetchApi("/api/v1/student/answers", {
     method: "POST",
@@ -131,6 +245,8 @@ export async function askQuestion(params: {
       module_id: params.module_id ?? null,
       marks: params.marks,
       question: params.question,
+      model: params.model ?? null,
+      session_id: params.session_id ?? null,
     }),
   });
 }
@@ -144,11 +260,37 @@ export interface ApiTokenResponse {
   role: "super_admin" | "admin" | "student";
 }
 
-export async function apiLogin(email: string, password: string): Promise<ApiTokenResponse> {
-  return fetchApi("/api/v1/auth/login", {
+export async function apiLogin(
+  email: string,
+  password: string,
+  mfaCode?: string,
+): Promise<ApiTokenResponse> {
+  const result = await fetchApi("/api/v1/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, mfa_code: mfaCode || null }),
   });
+  setAccessToken(result.access_token);
+  return result;
+}
+
+/** Revoke every session for the current user (all devices). */
+export async function apiLogoutAll(): Promise<{ message: string }> {
+  return fetchApi("/api/v1/auth/logout-all", { method: "POST" });
+}
+
+/** Revoke the current refresh token (HttpOnly cookie) server-side. */
+export async function apiLogout(): Promise<{ message: string }> {
+  const { apiUrl, normalize } = apiUrlBase();
+  try {
+    await fetch(`${apiUrl}${normalize("/api/v1/auth/logout")}`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // best effort — local state is cleared regardless
+  }
+  clearAuthSession();
+  return { message: "Logged out" };
 }
 
 // ── Admin: subjects / modules / documents ─────────────────────
@@ -235,9 +377,38 @@ export type SourceTypeValue =
   | "teacher_example"
   | "other";
 
+export interface ApiRouterStatus {
+  provider: "ollama" | "router";
+  base_url: string;
+  dashboard_url: string;
+  default_model: string;
+  reachable: boolean;
+  models_total: number;
+  models_available: number;
+  available_models: string[];
+  active_default: string | null;
+}
+
 export const adminApi = {
   getDashboard: (): Promise<ApiDashboard> =>
     fetchApi("/api/v1/admin/dashboard"),
+
+  getRouterStatus: (): Promise<ApiRouterStatus> =>
+    fetchApi("/api/v1/admin/router/status"),
+
+  listFeedback: (): Promise<ApiAdminFeedback[]> => fetchApi("/api/v1/admin/feedback"),
+
+  reviewFeedback: (
+    id: string,
+    body: { status: "reviewed" | "resolved"; admin_response?: string | null },
+  ): Promise<ApiAdminFeedback> =>
+    fetchApi(`/api/v1/admin/feedback/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteFeedback: (id: string): Promise<{ message: string }> =>
+    fetchApi(`/api/v1/admin/feedback/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   getSettings: (): Promise<Record<string, string>> =>
     fetchApi("/api/v1/admin/settings"),
@@ -425,6 +596,17 @@ export interface ApiSubjectDocument {
   published_at: string;
 }
 
+export interface ApiModel {
+  id: string;
+  owned_by: string | null;
+}
+
+export interface ApiModelsResponse {
+  provider: "ollama" | "router";
+  models: ApiModel[];
+  default: string;
+}
+
 export interface ApiHistoryItem {
   id: string;
   subject_name: string;
@@ -439,6 +621,8 @@ export interface ApiHistoryItem {
 
 export const studentApi = {
   listSubjects: (): Promise<ApiSubject[]> => fetchApi("/api/v1/student/subjects"),
+
+  listModels: (): Promise<ApiModelsResponse> => fetchApi("/api/v1/student/models"),
 
   listModules: (subjectId: string): Promise<ApiModule[]> =>
     fetchApi(`/api/v1/student/subjects/${encodeURIComponent(subjectId)}/modules`),
@@ -459,6 +643,30 @@ export const studentApi = {
 
   unsaveAnswer: (id: string): Promise<{ message: string }> =>
     fetchApi(`/api/v1/student/history/${id}/save`, { method: "DELETE" }),
+
+  listChatSessions: (): Promise<ApiChatSession[]> =>
+    fetchApi("/api/v1/student/chat-sessions"),
+
+  getSessionMessages: (sessionId: string): Promise<ApiSessionMessage[]> =>
+    fetchApi(`/api/v1/student/chat-sessions/${encodeURIComponent(sessionId)}/messages`),
+
+  renameChatSession: (sessionId: string, title: string): Promise<ApiChatSession> =>
+    fetchApi(`/api/v1/student/chat-sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  deleteChatSession: (sessionId: string): Promise<{ message: string }> =>
+    fetchApi(`/api/v1/student/chat-sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+
+  submitFeedback: (body: {
+    question_log_id: string;
+    rating: number;
+    comment?: string | null;
+  }): Promise<{ message: string }> =>
+    fetchApi("/api/v1/student/feedback", { method: "POST", body: JSON.stringify(body) }),
 };
 
 /** Infer the backend SourceType from a filename + admin's chosen category. */

@@ -46,11 +46,12 @@ class OllamaEmptyResponseError(OllamaError):
 
 @dataclass
 class OllamaUsage:
-    """Token usage reported by Ollama for a non-streaming completion."""
+    """Token usage reported by the LLM for a non-streaming completion."""
 
     content: str
     prompt_tokens: int | None
     completion_tokens: int | None
+    model: str | None = None
 
     @property
     def total_tokens(self) -> int | None:
@@ -81,13 +82,21 @@ class OllamaClient:
         self.model = model or settings.OLLAMA_MODEL
         self.timeout = timeout
 
-    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
         """
         Generate a non-streaming chat completion from Ollama.
 
         Args:
             prompt: User prompt content.
             system_prompt: Optional system prompt to instruct the model.
+            model: Optional model override.
+            history: Optional earlier {"role", "content"} conversation turns.
 
         Returns:
             The generated response content as a string.
@@ -98,11 +107,15 @@ class OllamaClient:
             OllamaResponseError: If the response is status != 200 or malformed.
             OllamaEmptyResponseError: If the response content is empty.
         """
-        usage = await self.generate_with_usage(prompt, system_prompt)
+        usage = await self.generate_with_usage(prompt, system_prompt, model, history)
         return usage.content
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: str | None = None
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> OllamaUsage:
         """
         Generate a non-streaming chat completion and return token usage.
@@ -110,15 +123,20 @@ class OllamaClient:
         Ollama reports ``prompt_eval_count`` and ``eval_count`` on
         non-streaming responses; both are surfaced as prompt/completion
         token counts. Counts are ``None`` if the server omits them.
+        An optional ``model`` overrides the client's default model, and
+        ``history`` carries earlier {"role", "content"} conversation turns.
         """
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
         messages.append({"role": "user", "content": prompt})
 
+        used_model = model or self.model
         url = f"{self.base_url.rstrip('/')}/api/chat"
         payload = {
-            "model": self.model,
+            "model": used_model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": 0.1},
@@ -166,6 +184,7 @@ class OllamaClient:
             content=content,
             prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
             completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+            model=used_model,
         )
 
     async def check_health(self) -> bool:

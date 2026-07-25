@@ -45,11 +45,31 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_DAYS: int = 7
 
     # ── AI / LLM ────────────────────────────────────────────
+    # Provider "ollama" uses the local Ollama server; "router" routes through
+    # an OpenAI-compatible gateway (9Router) with dynamic model switching.
+    LLM_PROVIDER: Literal["ollama", "router"] = "ollama"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2:3b"
     # CPU inference is slow (~5-10 tok/s); a grounded answer with a long
     # RAG prompt can need several minutes end to end.
     OLLAMA_TIMEOUT_SECONDS: float = 300.0
+    # OpenAI-compatible LLM gateway (OmniRoute / 9Router). The API key is
+    # injected server-side only and must never reach the frontend.
+    ROUTER_BASE_URL: str = "http://localhost:20128/v1"
+    ROUTER_API_KEY: str = ""
+    ROUTER_DEFAULT_MODEL: str = "opencode-zen/mimo-v2.5-free"
+    ROUTER_DASHBOARD_URL: str = "http://localhost:20128/dashboard"
+    # Comma-separated allowlist of gateway models exposed to students.
+    # Listed order = display order. Empty = expose every gateway model.
+    ROUTER_ALLOWED_MODELS: str = (
+        "opencode-zen/big-pickle,"
+        "opencode-zen/deepseek-v4-flash-free,"
+        "opencode-zen/laguna-s-2.1-free,"
+        "opencode-zen/ling-3.0-flash-free,"
+        "opencode-zen/mimo-v2.5-free,"
+        "opencode-zen/nemotron-3-ultra-free,"
+        "opencode-zen/north-mini-code-free"
+    )
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 
     # ── RAG Retrieval ────────────────────────────────────────
@@ -74,6 +94,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3001,"
         "http://localhost:8000"
     )
+
+    # ── Request limits / proxies ─────────────────────────────
+    # Hard cap for any request body (uploads get MAX_UPLOAD_SIZE_MB plus
+    # multipart overhead headroom).
+    MAX_REQUEST_BODY_MB: int = 25
+    # Reverse proxies whose X-Forwarded-For is trusted for rate-limit keys.
+    # Private ranges only: a public client can never present these as its
+    # socket peer, so internet XFF spoofing is ignored.
+    TRUSTED_PROXIES: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
     # ── Initial Admin ────────────────────────────────────────
     INITIAL_ADMIN_EMAIL: str = "admin@vibegpt.local"

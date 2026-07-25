@@ -35,6 +35,7 @@ export interface StudyAnswer {
   wordCount: number;
   processingMs: number;
   sources: SourceRef[];
+  model?: string | null;
 }
 
 export interface Conversation {

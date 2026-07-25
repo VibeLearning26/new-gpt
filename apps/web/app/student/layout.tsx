@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import {
   BookOpen,
   Bookmark,
@@ -13,32 +13,146 @@ import {
   Settings,
   Logout2,
   Menu,
+  Edit,
+  Trash,
   type IconComponent,
 } from "reicon-react";
 import { logout } from "@/lib/auth";
-import { studentApi, type ApiHistoryItem } from "@/lib/api";
+import { apiLogout, studentApi, type ApiChatSession } from "@/lib/api";
 
 const navItems: { icon: IconComponent; label: string; href: string; id: string }[] = [
   { icon: BookOpen, label: "Subjects", href: "/student/subjects", id: "subjects" },
   { icon: Bookmark, label: "Saved answers", href: "/student/saved", id: "saved" },
 ];
 
+function timeAgo(iso: string): string {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function SessionList({ onNavigate }: { onNavigate: () => void }) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const activeId = searchParams.get("session");
+  const [sessions, setSessions] = useState<ApiChatSession[] | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+
+  const load = useCallback(() => {
+    studentApi
+      .listChatSessions()
+      .then(setSessions)
+      .catch(() => setSessions([]));
+  }, []);
+
+  useEffect(() => {
+    load();
+    window.addEventListener("vibegpt:sessions-changed", load);
+    return () => window.removeEventListener("vibegpt:sessions-changed", load);
+  }, [load]);
+
+  const commitRename = async (id: string) => {
+    const title = renameText.trim();
+    setRenamingId(null);
+    if (!title) return;
+    try {
+      await studentApi.renameChatSession(id, title);
+      load();
+    } catch {
+      load();
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      await studentApi.deleteChatSession(id);
+      load();
+      if (activeId === id) router.push("/student/chat");
+    } catch {
+      load();
+    }
+  };
+
+  if (!sessions || sessions.length === 0) return null;
+
+  return (
+    <div>
+      <p className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
+        Conversations
+      </p>
+      <div className="space-y-0.5">
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className={`sidebar-item !py-2 group ${activeId === s.id ? "active" : ""}`}
+          >
+            <span className="sidebar-icon text-faint shrink-0">
+              <ChatLine size={14} />
+            </span>
+            {renamingId === s.id ? (
+              <input
+                autoFocus
+                className="input !py-1.5 !text-[13px] flex-1 min-w-0"
+                value={renameText}
+                onChange={(e) => setRenameText(e.target.value)}
+                onBlur={() => commitRename(s.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRename(s.id);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                aria-label="Rename conversation"
+              />
+            ) : (
+              <Link
+                href={`/student/chat?session=${s.id}`}
+                onClick={onNavigate}
+                className="flex-1 min-w-0"
+                title={s.title}
+              >
+                <span className="truncate block text-[13px] leading-tight">{s.title}</span>
+                <span className="text-[10px] text-faint">
+                  {s.message_count} messages · {timeAgo(s.updated_at)}
+                </span>
+              </Link>
+            )}
+            <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition shrink-0">
+              <button
+                className="session-action"
+                aria-label="Rename conversation"
+                onClick={() => {
+                  setRenamingId(s.id);
+                  setRenameText(s.title);
+                }}
+              >
+                <Edit size={12} />
+              </button>
+              <button
+                className="session-action session-action-danger"
+                aria-label="Delete conversation"
+                onClick={() => remove(s.id)}
+              >
+                <Trash size={12} />
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
-  const [recent, setRecent] = useState<ApiHistoryItem[]>([]);
   const pathname = usePathname();
   const router = useRouter();
 
-  useEffect(() => {
-    studentApi
-      .getHistory(6)
-      .then(setRecent)
-      .catch(() => setRecent([]));
-  }, []);
-
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await apiLogout();
     logout();
     router.push("/login");
   };
@@ -106,33 +220,10 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
             })}
           </nav>
 
-          {/* Recent conversations */}
-          {recent.length > 0 && (
-            <div>
-              <p className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
-                Recent
-              </p>
-              <div className="space-y-0.5">
-                {recent.map((c) => (
-                  <Link
-                    key={c.id}
-                    href="/student/chat"
-                    onClick={() => setOpen(false)}
-                    className="sidebar-item !py-2 group"
-                    title={c.question}
-                  >
-                    <span className="sidebar-icon text-faint">
-                      <ChatLine size={14} />
-                    </span>
-                    <span className="truncate flex-1 text-[13px]">{c.question}</span>
-                    <span className="text-[10px] text-faint opacity-0 group-hover:opacity-100 transition">
-                      {c.subject_name}
-                    </span>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Chat sessions */}
+          <Suspense fallback={null}>
+            <SessionList onNavigate={() => setOpen(false)} />
+          </Suspense>
         </div>
 
         {/* Bottom — admin + logout */}

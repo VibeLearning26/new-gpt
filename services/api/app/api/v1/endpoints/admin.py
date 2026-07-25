@@ -18,13 +18,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import Integer, delete, func, select
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.dependencies import AdminUser, DbSession
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.rate_limit import limiter
 from app.core.security import hash_password, validate_password_strength
 from app.models.academic import (
     AcademicYear,
@@ -46,6 +48,9 @@ from app.models.document import (
 from app.models.question import Feedback, QuestionLog, QuestionSource
 from app.models.system import AuditLog, SystemSetting
 from app.models.user import User, UserRole
+from app.rag.llm import filter_gateway_models, get_model_catalog
+from app.rag.ollama_client import OllamaError
+from app.rag.router_client import RouterClient
 from app.schemas.academic import (
     AcademicYearCreate,
     AcademicYearResponse,
@@ -79,6 +84,7 @@ from app.schemas.analytics import (
 )
 from app.schemas.common import MessageResponse
 from app.schemas.document import DocumentUploadResponse
+from app.schemas.question import AdminFeedbackItem, ReviewFeedbackRequest
 from app.storage import get_document_storage
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -478,6 +484,139 @@ async def get_analytics(
             departments=department_count,
         ),
     )
+
+
+# ── Student Feedback ─────────────────────────────────────────
+
+
+def _feedback_to_item(f: Feedback) -> AdminFeedbackItem:
+    log = f.question_log
+    if f.admin_response:
+        status = "resolved"
+    elif f.reviewed_at is not None:
+        status = "reviewed"
+    else:
+        status = "new"
+    return AdminFeedbackItem(
+        id=f.id,
+        student_name=f.user.full_name if f.user else "Unknown",
+        question=log.question if log else "—",
+        answer_preview=(log.answer[:240] if log and log.answer else None),
+        subject_name=log.subject.name if log and log.subject else None,
+        marks=log.marks if log else 0,
+        rating=f.rating,
+        comment=f.comment,
+        status=status,
+        admin_response=f.admin_response,
+        created_at=f.created_at,
+        reviewed_at=f.reviewed_at,
+    )
+
+
+async def _load_feedback_with_context(db, feedback_id: UUID) -> Feedback:
+    result = await db.execute(
+        select(Feedback)
+        .where(Feedback.id == feedback_id)
+        .options(
+            selectinload(Feedback.user),
+            selectinload(Feedback.question_log).selectinload(QuestionLog.subject),
+        )
+    )
+    feedback = result.scalar_one_or_none()
+    if feedback is None:
+        raise NotFoundError("Feedback")
+    return feedback
+
+
+@router.get("/feedback", response_model=list[AdminFeedbackItem])
+async def list_feedback(current_user: AdminUser, db: DbSession):
+    """All student feedback, newest first, with question context."""
+    result = await db.execute(
+        select(Feedback)
+        .options(
+            selectinload(Feedback.user),
+            selectinload(Feedback.question_log).selectinload(QuestionLog.subject),
+        )
+        .order_by(Feedback.created_at.desc())
+    )
+    return [_feedback_to_item(f) for f in result.scalars().all()]
+
+
+@router.patch("/feedback/{feedback_id}", response_model=AdminFeedbackItem)
+async def review_feedback(
+    feedback_id: UUID,
+    body: ReviewFeedbackRequest,
+    current_user: AdminUser,
+    db: DbSession,
+):
+    """Mark feedback reviewed/resolved and optionally attach an admin response."""
+    feedback = await _load_feedback_with_context(db, feedback_id)
+
+    if body.admin_response is not None:
+        feedback.admin_response = body.admin_response
+    if feedback.reviewed_at is None:
+        feedback.reviewed_at = datetime.now(UTC)
+        feedback.reviewed_by = current_user.id
+
+    await db.flush()
+    feedback = await _load_feedback_with_context(db, feedback_id)
+    return _feedback_to_item(feedback)
+
+
+@router.delete("/feedback/{feedback_id}", response_model=MessageResponse)
+async def delete_feedback(
+    feedback_id: UUID,
+    current_user: AdminUser,
+    db: DbSession,
+):
+    """Delete a feedback entry once its issue has been handled."""
+    feedback = await _load_feedback_with_context(db, feedback_id)
+    await db.delete(feedback)
+    await db.flush()
+    return MessageResponse(message="Feedback deleted")
+
+
+# ── LLM Gateway (Router) ─────────────────────────────────────
+
+
+@router.get("/router/status")
+async def get_router_status(current_user: AdminUser):
+    """Gateway health + catalog summary for the admin Router page.
+    No credentials are returned — only reachability and model counts."""
+    settings = get_settings()
+    payload: dict = {
+        "provider": settings.LLM_PROVIDER,
+        "base_url": settings.ROUTER_BASE_URL,
+        "dashboard_url": settings.ROUTER_DASHBOARD_URL,
+        "default_model": settings.ROUTER_DEFAULT_MODEL,
+        "reachable": False,
+        "models_total": 0,
+        "models_available": 0,
+        "available_models": [],
+        "active_default": None,
+    }
+
+    if settings.LLM_PROVIDER != "router":
+        payload["active_default"] = settings.OLLAMA_MODEL
+        return payload
+
+    try:
+        raw = await RouterClient().list_models()
+        available = [m["id"] for m in filter_gateway_models(raw)]
+        default = await get_model_catalog().default_model()
+        payload.update(
+            {
+                "reachable": True,
+                "models_total": len(raw),
+                "models_available": len(available),
+                "available_models": available,
+                "active_default": default,
+            }
+        )
+    except OllamaError:
+        payload["reachable"] = False
+
+    return payload
 
 
 # ── Quick Config / System Settings ───────────────────────────
@@ -899,7 +1038,7 @@ def _validate_file_type(filename: str) -> str:
 
 
 def _validate_file_content(file_bytes: bytes, extension: str) -> None:
-    """Reject empty, corrupt, or extension-spoofed supported documents."""
+    """Reject empty, corrupt, extension-spoofed, or bomb-like documents."""
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
@@ -913,8 +1052,27 @@ def _validate_file_content(file_bytes: bytes, extension: str) -> None:
         "docx": "word/document.xml",
         "xlsx": "xl/workbook.xml",
     }
+    # Decompression limits checked from the central directory — nothing is
+    # extracted here, so a malicious archive cannot exhaust memory/disk.
+    max_members = 2048
+    max_uncompressed = 256 * 1024 * 1024  # 256 MB across all members
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            infos = archive.infolist()
+            if len(infos) > max_members:
+                raise HTTPException(
+                    status_code=400, detail="Archive contains too many entries"
+                )
+            if sum(info.file_size for info in infos) > max_uncompressed:
+                raise HTTPException(
+                    status_code=400, detail="Archive uncompressed size exceeds limit"
+                )
+            for info in infos:
+                name = info.filename
+                if name.startswith(("/", "\\")) or ".." in name.split("/"):
+                    raise HTTPException(
+                        status_code=400, detail="Archive entry has an unsafe path"
+                    )
             if expected_members[extension] not in archive.namelist():
                 raise HTTPException(
                     status_code=400,
@@ -927,8 +1085,16 @@ def _validate_file_content(file_bytes: bytes, extension: str) -> None:
         ) from exc
 
 
+@limiter.limit("20/hour")
+async def _check_upload_limit(request: Request):
+    """Per-client upload throttle; invoked from the upload endpoint because
+    slowapi's decorator cannot wrap File/Form signatures directly."""
+    return None
+
+
 @router.post("/documents/upload", response_model=DocumentUploadResponse, status_code=201)
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     subject_id: UUID = Form(...),
     module_id: UUID | None = Form(None),
@@ -939,6 +1105,7 @@ async def upload_document(
     current_user: AdminUser,
     db: DbSession,
 ):
+    await _check_upload_limit(request)
     settings = get_settings()
     storage = get_document_storage()
 
@@ -1161,36 +1328,6 @@ async def delete_document(document_id: UUID, current_user: AdminUser, db: DbSess
     await db.delete(doc)
     await db.flush()
     return MessageResponse(message="Document deleted")
-
-
-# ── Feedback ─────────────────────────────────────────────────
-
-@router.get("/feedback")
-async def list_feedback(
-    current_user: AdminUser,
-    db: DbSession,
-    min_rating: int | None = None,
-    max_rating: int | None = None,
-):
-    query = select(Feedback).order_by(Feedback.created_at.desc())
-    if min_rating:
-        query = query.where(Feedback.rating >= min_rating)
-    if max_rating:
-        query = query.where(Feedback.rating <= max_rating)
-    result = await db.execute(query.limit(100))
-    feedbacks = result.scalars().all()
-    return [
-        {
-            "id": str(f.id),
-            "user_id": str(f.user_id),
-            "question_log_id": str(f.question_log_id),
-            "rating": f.rating,
-            "comment": f.comment,
-            "admin_response": f.admin_response,
-            "created_at": f.created_at.isoformat(),
-        }
-        for f in feedbacks
-    ]
 
 
 # ── Audit Logs ───────────────────────────────────────────────
