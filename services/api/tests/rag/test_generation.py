@@ -17,7 +17,7 @@ from app.rag.generation import (
     build_prompt,
     validate_answer,
 )
-from app.rag.ollama_client import OllamaConnectionError
+from app.rag.ollama_client import OllamaConnectionError, OllamaUsage
 
 
 def make_chunk(content: str, page: int | None = 1, doc_name: str = "Notes.pdf") -> DocumentChunk:
@@ -46,9 +46,13 @@ def make_service(scored_chunks, ollama_response=None, ollama_error=None):
     ollama = MagicMock()
     ollama.model = "llama3.2:3b"
     if ollama_error is not None:
-        ollama.generate = AsyncMock(side_effect=ollama_error)
+        ollama.generate_with_usage = AsyncMock(side_effect=ollama_error)
     else:
-        ollama.generate = AsyncMock(return_value=ollama_response)
+        ollama.generate_with_usage = AsyncMock(
+            return_value=OllamaUsage(
+                content=ollama_response, prompt_tokens=10, completion_tokens=7
+            )
+        )
 
     return AnswerGenerationService(db, retrieval=retrieval, ollama=ollama)
 
@@ -65,7 +69,10 @@ async def test_generate_success_with_citations():
     assert result.sources[0].label == "S1"
     assert result.sources[0].relevance_score == 0.9
     assert result.word_count > 0
-    service.ollama.generate.assert_awaited_once()
+    assert result.prompt_tokens == 10
+    assert result.completion_tokens == 7
+    assert result.total_tokens == 17
+    service.ollama.generate_with_usage.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -76,7 +83,7 @@ async def test_generate_insufficient_sources():
 
     assert result.status == AnswerStatus.INSUFFICIENT_SOURCES
     assert result.sources == []
-    service.ollama.generate.assert_not_awaited()
+    service.ollama.generate_with_usage.assert_not_awaited()
 
 
 @pytest.mark.asyncio
