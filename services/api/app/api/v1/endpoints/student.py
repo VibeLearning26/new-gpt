@@ -13,6 +13,7 @@ GET  /api/v1/student/saved-answers
 GET  /api/v1/student/profile
 """
 
+import asyncio
 from urllib.parse import quote
 from uuid import UUID
 
@@ -26,7 +27,7 @@ from app.core.dependencies import DbSession, StudentUser
 from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.core.rate_limit import limiter
 from app.models.academic import Module, StudentSubjectPermission, Subject
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.models.question import (
     ChatSession,
     Feedback,
@@ -34,8 +35,10 @@ from app.models.question import (
     QuestionSource,
     SavedAnswer,
 )
+from app.rag.embedding import EmbeddingService
 from app.rag.generation import AnswerGenerationService
 from app.rag.llm import filter_gateway_models, get_model_catalog
+from app.rag.modalities import model_input_modalities, validate_attachments
 from app.rag.ollama_client import OllamaError
 from app.rag.router_client import RouterClient
 from app.schemas.academic import ModuleResponse, SubjectResponse
@@ -111,6 +114,65 @@ async def _require_subject_access(subject_id: UUID, current_user, db: DbSession)
     )
     if result.scalar_one_or_none() is None:
         raise AuthorizationError("You do not have access to this subject")
+
+
+async def _resolve_subject_for_question(
+    question: str, current_user, db: DbSession
+) -> Subject:
+    """Route an unscoped question to the most relevant accessible subject.
+
+    PostgreSQL full-text ranking is intentionally used before the normal
+    vector retrieval so auto-routing does not generate the query embedding
+    twice. Only published document chunks can influence the route.
+    """
+    accessible = _accessible_subject_query(current_user).subquery()
+    searchable_text = func.concat_ws(
+        " ",
+        Subject.name,
+        Subject.code,
+        func.coalesce(Document.topic, ""),
+        DocumentChunk.content,
+    )
+    query = func.plainto_tsquery("english", question)
+    rank = func.ts_rank_cd(func.to_tsvector("english", searchable_text), query)
+
+    ranked = await db.execute(
+        select(Subject)
+        .join(Document, Document.subject_id == Subject.id)
+        .join(DocumentChunk, DocumentChunk.document_id == Document.id)
+        .where(
+            Subject.id.in_(select(accessible.c.id)),
+            Document.status == DocumentStatus.PUBLISHED,
+            Document.archived_at.is_(None),
+            DocumentChunk.is_active.is_(True),
+            DocumentChunk.embedding.is_not(None),
+            rank > 0,
+        )
+        .order_by(rank.desc())
+        .limit(1)
+    )
+    subject = ranked.scalar_one_or_none()
+    if subject is not None:
+        return subject
+
+    fallback = await db.execute(
+        select(Subject)
+        .join(Document, Document.subject_id == Subject.id)
+        .where(
+            Subject.id.in_(select(accessible.c.id)),
+            Document.status == DocumentStatus.PUBLISHED,
+            Document.archived_at.is_(None),
+        )
+        .group_by(Subject.id)
+        .order_by(func.max(Document.published_at).desc().nulls_last(), Subject.name)
+        .limit(1)
+    )
+    subject = fallback.scalar_one_or_none()
+    if subject is None:
+        raise AuthorizationError(
+            "No published subject material is available. Ask an admin to publish a document."
+        )
+    return subject
 
 
 @router.get("/subjects", response_model=list[SubjectResponse])
@@ -224,7 +286,13 @@ async def list_available_models(current_user: StudentUser):
     if settings.LLM_PROVIDER != "router":
         return {
             "provider": "ollama",
-            "models": [{"id": settings.OLLAMA_MODEL, "owned_by": "ollama"}],
+            "models": [
+                {
+                    "id": settings.OLLAMA_MODEL,
+                    "owned_by": "ollama",
+                    "input_modalities": ["text"],
+                }
+            ],
             "default": settings.OLLAMA_MODEL,
         }
 
@@ -237,7 +305,11 @@ async def list_available_models(current_user: StudentUser):
     return {
         "provider": "router",
         "models": [
-            {"id": m["id"], "owned_by": m.get("owned_by")}
+            {
+                "id": m["id"],
+                "owned_by": m.get("owned_by"),
+                "input_modalities": model_input_modalities(m),
+            }
             for m in filter_gateway_models(raw)
         ],
         "default": default,
@@ -256,19 +328,43 @@ async def ask_question(
     Submit a question and receive an exam-ready answer.
     This is the core RAG endpoint — skeleton for Phase 1.
     """
-    # Verify subject access
-    await _require_subject_access(body.subject_id, current_user, db)
+    # Authentication reads the user through this same session. End that
+    # read-only transaction before the potentially slow first model load so
+    # the connection returns to the pool instead of sitting idle.
+    await db.commit()
 
-    # Validate the requested model against the active provider's catalog.
-    if body.model is not None and not await get_model_catalog().is_available(body.model):
-        raise ValidationError(f"Model '{body.model}' is not available")
+    # The first sentence-transformer load can take over a minute on a
+    # constrained Windows Docker host. Warm it before any DB query/transaction
+    # so an idle checked-out asyncpg connection cannot expire during loading.
+    await asyncio.to_thread(EmbeddingService)
+
+    if body.subject_id is None:
+        subject = await _resolve_subject_for_question(body.question, current_user, db)
+    else:
+        await _require_subject_access(body.subject_id, current_user, db)
+        subject_result = await db.execute(
+            select(Subject).where(Subject.id == body.subject_id)
+        )
+        subject = subject_result.scalar_one()
+    subject_id = subject.id
+
+    # Validate the requested model and every attachment server-side. The UI's
+    # capability controls are informative, never an authorization boundary.
+    catalog = get_model_catalog()
+    effective_model = body.model or await catalog.default_model()
+    model_record = await catalog.model_record(effective_model)
+    if model_record is None:
+        raise ValidationError(f"Model '{effective_model}' is not available")
+    attachments = validate_attachments(
+        body.attachments, effective_model, model_record
+    )
 
     # Full RAG pipeline: retrieve → prompt → LLM → validate
     if body.module_id is not None:
         module_result = await db.execute(
             select(Module).where(
                 Module.id == body.module_id,
-                Module.subject_id == body.subject_id,
+                Module.subject_id == subject_id,
                 Module.is_active == True,  # noqa: E712
                 Module.archived_at.is_(None),
             )
@@ -283,7 +379,7 @@ async def ask_question(
     else:
         session = ChatSession(
             user_id=current_user.id,
-            subject_id=body.subject_id,
+            subject_id=subject_id,
             title=body.question.strip()[:80] or "New chat",
         )
         db.add(session)
@@ -309,17 +405,18 @@ async def ask_question(
     service = AnswerGenerationService(db)
     result = await service.generate(
         question=body.question,
-        subject_id=body.subject_id,
+        subject_id=subject_id,
         marks=body.marks,
         module_id=body.module_id,
         model=body.model,
         history=history or None,
+        attachments=attachments or None,
     )
 
     question_log = QuestionLog(
         user_id=current_user.id,
         session_id=session.id,
-        subject_id=body.subject_id,
+        subject_id=subject_id,
         module_id=body.module_id,
         marks=body.marks,
         question=body.question,
@@ -362,6 +459,8 @@ async def ask_question(
         word_count=question_log.word_count,
         marks=question_log.marks,
         question=question_log.question,
+        subject_id=subject_id,
+        subject_name=subject.name,
         sources=[
             SourceInfo(
                 label=c.label,
@@ -602,7 +701,7 @@ async def get_history_detail(question_id: UUID, current_user: StudentUser, db: D
     result = await db.execute(
         select(QuestionLog)
         .where(and_(QuestionLog.id == question_id, QuestionLog.user_id == current_user.id))
-        .options(selectinload(QuestionLog.sources))
+        .options(selectinload(QuestionLog.sources), selectinload(QuestionLog.subject))
     )
     log = result.scalar_one_or_none()
     if log is None:
@@ -628,6 +727,8 @@ async def get_history_detail(question_id: UUID, current_user: StudentUser, db: D
         word_count=log.word_count,
         marks=log.marks,
         question=log.question,
+        subject_id=log.subject_id,
+        subject_name=log.subject.name if log.subject else "Unknown",
         sources=sources,
         model=log.model_name,
         processing_ms=log.processing_time_ms,

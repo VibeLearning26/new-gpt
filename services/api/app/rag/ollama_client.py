@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.config import get_settings
+from app.rag.modalities import ValidatedAttachment
 
 
 class OllamaError(Exception):
@@ -88,6 +89,7 @@ class OllamaClient:
         system_prompt: str | None = None,
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        attachments: list[ValidatedAttachment] | None = None,
     ) -> str:
         """
         Generate a non-streaming chat completion from Ollama.
@@ -107,7 +109,9 @@ class OllamaClient:
             OllamaResponseError: If the response is status != 200 or malformed.
             OllamaEmptyResponseError: If the response content is empty.
         """
-        usage = await self.generate_with_usage(prompt, system_prompt, model, history)
+        usage = await self.generate_with_usage(
+            prompt, system_prompt, model, history, attachments
+        )
         return usage.content
 
     async def generate_with_usage(
@@ -116,6 +120,7 @@ class OllamaClient:
         system_prompt: str | None = None,
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        attachments: list[ValidatedAttachment] | None = None,
     ) -> OllamaUsage:
         """
         Generate a non-streaming chat completion and return token usage.
@@ -131,7 +136,15 @@ class OllamaClient:
             messages.append({"role": "system", "content": system_prompt})
         if history:
             messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
+        user_message = {"role": "user", "content": prompt}
+        images = [
+            item.base64_data
+            for item in (attachments or [])
+            if item.modality == "image"
+        ]
+        if images:
+            user_message["images"] = images
+        messages.append(user_message)
 
         used_model = model or self.model
         url = f"{self.base_url.rstrip('/')}/api/chat"

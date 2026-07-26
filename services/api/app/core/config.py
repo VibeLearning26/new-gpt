@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "vibegpt"
     POSTGRES_USER: str = "vibegpt"
     POSTGRES_PASSWORD: str = "vibegpt_dev_password"
+    # SQL statement logging is extremely noisy for the polling worker. Enable
+    # only while diagnosing a database issue.
+    SQL_ECHO: bool = False
 
     # ── Authentication ───────────────────────────────────────
     JWT_SECRET_KEY: str = "change-this-to-a-random-64-char-string"
@@ -69,6 +72,12 @@ class Settings(BaseSettings):
         "opencode-zen/mimo-v2.5-free,"
         "opencode-zen/nemotron-3-ultra-free,"
         "opencode-zen/north-mini-code-free"
+    )
+    # Provider catalogs often omit input capabilities. Administrators can
+    # safely enable verified media types with:
+    # model=image|audio;another-model=document|video
+    ROUTER_MODEL_INPUT_MODALITIES: str = (
+        "mimo-v2.5-free=image;opencode-zen/mimo-v2.5-free=image"
     )
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Plus, BookOpen, Check, ChevronDown } from "reicon-react";
 import { adminApi, type ApiSubject, type ApiSemester, type ApiDepartment, type ApiModule } from "@/lib/api";
 import { Dropdown } from "@/components/Dropdown";
+import { SubjectMaterialsManager } from "@/components/admin/SubjectMaterialsManager";
 
 const semLabel = (sem: ApiSemester) => `${sem.name}`;
 
@@ -26,6 +27,8 @@ export default function AdminSubjectsPage() {
   // Editing state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingModules, setEditingModules] = useState<ApiModule[]>([]);
+  const [editingName, setEditingName] = useState("");
+  const [editingCode, setEditingCode] = useState("");
 
   // New subject state
   const [showNew, setShowNew] = useState(false);
@@ -34,6 +37,7 @@ export default function AdminSubjectsPage() {
   const [newSemesterId, setNewSemesterId] = useState("");
   const [newDepartmentId, setNewDepartmentId] = useState("");
   const [savedTick, setSavedTick] = useState(false);
+  const [creationError, setCreationError] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -95,6 +99,7 @@ export default function AdminSubjectsPage() {
 
   const addSubject = async () => {
     if (!newName.trim() || !newCode.trim() || !newSemesterId || !newDepartmentId) return;
+    setCreationError("");
     try {
       const newSubj = await adminApi.createSubject({
         name: newName.trim(),
@@ -108,8 +113,7 @@ export default function AdminSubjectsPage() {
       setShowNew(false);
       saveTick();
     } catch (err) {
-      console.error(err);
-      alert("Failed to create subject");
+      setCreationError(err instanceof Error ? err.message : "Failed to create subject");
     }
   };
 
@@ -122,8 +126,7 @@ export default function AdminSubjectsPage() {
       if (target) setArchivedSubjects((prev) => [...prev, target]);
       if (editingId === id) setEditingId(null);
     } catch (err) {
-      console.error(err);
-      alert("Failed to archive subject");
+      setError(err instanceof Error ? err.message : "Failed to archive subject");
     }
   };
 
@@ -165,6 +168,9 @@ export default function AdminSubjectsPage() {
       return;
     }
     setEditingId(id);
+    const subject = subjects.find((item) => item.id === id);
+    setEditingName(subject?.name ?? "");
+    setEditingCode(subject?.code ?? "");
     try {
       const mods = await adminApi.listModules(id);
       setEditingModules(mods);
@@ -194,16 +200,25 @@ export default function AdminSubjectsPage() {
     );
   };
 
-  const saveModules = async () => {
-    // Send all updates to backend
+  const saveSubjectWorkspace = async () => {
+    if (!editingId || !editingName.trim() || !editingCode.trim()) return;
     try {
+      const updated = await adminApi.updateSubject(editingId, {
+        name: editingName.trim(),
+        code: editingCode.trim().toUpperCase(),
+      });
       await Promise.all(
-        editingModules.map(m => adminApi.updateModule(m.id, { name: m.name }))
+        editingModules.map((module) =>
+          adminApi.updateModule(module.id, { name: module.name }),
+        ),
       );
+      setSubjects((current) =>
+        current.map((subject) => (subject.id === updated.id ? updated : subject)),
+      );
+      setError("");
       saveTick();
     } catch (err) {
-      console.error(err);
-      alert("Failed to save modules");
+      setError(err instanceof Error ? err.message : "Failed to save subject changes");
     }
   };
 
@@ -223,9 +238,9 @@ export default function AdminSubjectsPage() {
     <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Manage subjects</h1>
+          <h1 className="text-2xl font-bold">Subject handling</h1>
           <p className="text-sm text-muted mt-1">
-            Add, edit or remove subjects and their modules.
+            Create subjects, edit modules, upload documents and publish them to students.
           </p>
         </div>
         <button
@@ -237,7 +252,7 @@ export default function AdminSubjectsPage() {
       </div>
 
       {showNew && (
-        <div className="panel p-5 mb-6 fade-up">
+        <div className="panel relative z-40 p-5 mb-6 fade-up overflow-visible">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-faint mb-4">
             Create new subject
           </p>
@@ -287,6 +302,11 @@ export default function AdminSubjectsPage() {
           {departments.length === 0 && (
             <p className="text-err text-xs mb-3">No departments found. Please create one in DB first.</p>
           )}
+          {creationError && (
+            <p className="text-err text-xs mb-3" role="alert">
+              {creationError}
+            </p>
+          )}
           <div className="flex gap-2">
             <button onClick={addSubject} className="btn-primary" disabled={!newDepartmentId || !newSemesterId}>
               Create
@@ -299,7 +319,7 @@ export default function AdminSubjectsPage() {
       )}
 
       {/* Branch / semester filter bar */}
-      <div className="panel p-4 mb-6 sticky top-4 z-30 bg-panel/90 backdrop-blur">
+      <div className="panel p-4 mb-6 sticky top-4 z-20 bg-panel/90 backdrop-blur">
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[230px] flex-1">
             <label className="field-label">Branch</label>
@@ -389,7 +409,7 @@ export default function AdminSubjectsPage() {
                             </div>
                           </div>
                           <button onClick={() => openEditor(s.id)} className="btn-ghost">
-                            {editingId === s.id ? "Close" : "Edit"}
+                            {editingId === s.id ? "Close" : "Manage"}
                           </button>
                           <button
                             onClick={() => removeSubject(s.id)}
@@ -400,7 +420,25 @@ export default function AdminSubjectsPage() {
                         </div>
 
                         {editingId === s.id && (
-                          <div className="space-y-2 fade-in">
+                          <div className="space-y-4 fade-in">
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div>
+                                <label className="field-label">Subject name</label>
+                                <input
+                                  className="input"
+                                  value={editingName}
+                                  onChange={(event) => setEditingName(event.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="field-label">Subject code</label>
+                                <input
+                                  className="input font-mono"
+                                  value={editingCode}
+                                  onChange={(event) => setEditingCode(event.target.value)}
+                                />
+                              </div>
+                            </div>
                             <p className="text-[11px] font-semibold uppercase tracking-wider text-faint mb-2">
                               Modules
                             </p>
@@ -434,7 +472,7 @@ export default function AdminSubjectsPage() {
                                 <Plus size={14} /> Add module
                               </button>
                               <button
-                                onClick={saveModules}
+                                onClick={saveSubjectWorkspace}
                                 className="btn-primary ml-auto inline-flex items-center gap-1.5"
                               >
                                 {savedTick ? (
@@ -446,6 +484,7 @@ export default function AdminSubjectsPage() {
                                 )}
                               </button>
                             </div>
+                            <SubjectMaterialsManager subject={s} />
                           </div>
                         )}
                       </div>

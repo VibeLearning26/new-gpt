@@ -13,7 +13,8 @@ x-hardened: &hardened
 services:
   # ── PostgreSQL + pgvector ──────────────────────────────────
   postgres:
-    <<: *hardened
+    # PostgreSQL must adjust ownership on its persistent data volume before it
+    # drops privileges; dropping all capabilities blocks that initialization.
     image: pgvector/pgvector:pg16
     container_name: vibegpt-postgres
     environment:
@@ -66,9 +67,14 @@ services:
   # and API surface never leave this host.
   router:
     <<: *hardened
-    image: node:20-slim
+    # Optional external-model gateway. The default VibeGPT setup uses Ollama,
+    # so keep this heavyweight third-party service out of normal startup.
+    # Enable only when needed with: docker compose --profile router up -d
+    profiles: ["router"]
+    build:
+      context: .
+      dockerfile: router.Dockerfile
     container_name: vibegpt-router
-    command: sh -c "npm install -g omniroute@3 && omniroute serve --no-open"
     ports:
       - "127.0.0.1:20128:20128" # Internal host access only
     environment:
@@ -111,8 +117,6 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
-      ROUTER_BASE_URL: http://router:20128/v1
-      ROUTER_DASHBOARD_URL: http://localhost:20128/dashboard
       PYTHONPATH: /app
     ports:
       - "127.0.0.1:8000:8000"

@@ -2,6 +2,7 @@
 VibeGPT - Document Retrieval Service
 """
 
+import asyncio
 import logging
 import uuid
 
@@ -32,7 +33,9 @@ class RetrievalService:
         """
         try:
             # 1. Embed query
-            query_vector = self.embedding_service.embed_query(query)
+            query_vector = await asyncio.to_thread(
+                self.embedding_service.embed_query, query
+            )
 
             # 2. Build base query with distance calculation
             distance_expr = DocumentChunk.embedding.cosine_distance(query_vector)
@@ -83,7 +86,9 @@ class RetrievalService:
         Relevance is cosine similarity in [0, 1] (1 - cosine distance,
         exact because embeddings are L2-normalized).
         """
-        query_vector = self.embedding_service.embed_query(query)
+        query_vector = await asyncio.to_thread(
+            self.embedding_service.embed_query, query
+        )
         distance_expr = DocumentChunk.embedding.cosine_distance(query_vector)
 
         stmt = (

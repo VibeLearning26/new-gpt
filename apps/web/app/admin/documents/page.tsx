@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DocumentText, BookOpen, Refresh, Upload } from "reicon-react";
 import { Dropdown } from "@/components/Dropdown";
 import {
+  ApiError,
   adminApi,
   inferSourceType,
   type ApiDocument,
@@ -21,7 +22,7 @@ interface Upload {
   name: string;
   size: string;
   moduleName: string;
-  status: "uploading" | "processing" | "done" | "failed";
+  status: "uploading" | "processing" | "done" | "duplicate" | "failed";
   error?: string;
   documentId?: string;
 }
@@ -324,6 +325,21 @@ function SubjectUploadCard({ subject, demo }: { subject: ApiSubject; demo: boole
         );
         pollProcessing();
       } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          setUploads((prev) =>
+            prev.map((u) =>
+              u.id === id
+                ? {
+                    ...u,
+                    status: "duplicate",
+                    error: "This file is already uploaded",
+                  }
+                : u,
+            ),
+          );
+          await refreshDocs();
+          continue;
+        }
         setUploads((prev) =>
           prev.map((u) =>
             u.id === id
@@ -469,6 +485,8 @@ function SubjectUploadCard({ subject, demo }: { subject: ApiSubject; demo: boole
                 </div>
                 {u.status === "done" ? (
                   <span className="badge badge-success">✓ Indexed</span>
+                ) : u.status === "duplicate" ? (
+                  <span className="badge badge-neutral">Already uploaded</span>
                 ) : u.status === "failed" ? (
                   <span className="badge badge-error">✕ Failed</span>
                 ) : u.status === "processing" ? (

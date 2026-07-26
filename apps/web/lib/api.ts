@@ -1,5 +1,15 @@
 let redirectingToLogin = false;
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 // Access tokens live in memory ONLY — never in web storage, so XSS cannot
 // steal them. A non-secret sessionStorage marker records that a real session
 // exists so pages don't fall back to demo mode across reloads; the actual
@@ -24,6 +34,8 @@ function readAccessToken(): string | null {
 export function clearAuthSession(): void {
   accessToken = null;
   if (typeof window === "undefined") return;
+  // Remove tokens written by pre-hardening builds as well.
+  sessionStorage.removeItem("access_token");
   sessionStorage.removeItem(SESSION_MARKER);
   sessionStorage.removeItem("vibegpt_user");
 }
@@ -127,7 +139,7 @@ async function requestApi(endpoint: string, options: RequestInit = {}): Promise<
       }
     } catch {}
     if (response.status === 401) handleUnauthorized(errorDetail);
-    throw new Error(errorDetail);
+    throw new ApiError(errorDetail, response.status);
   }
 
   return response;
@@ -165,6 +177,8 @@ export interface ApiAnswerResponse {
   word_count: number | null;
   marks: number;
   question: string;
+  subject_id: string;
+  subject_name: string;
   sources: ApiSourceInfo[];
   model: string | null;
   processing_ms: number | null;
@@ -231,22 +245,24 @@ export function isUuid(value: string): boolean {
 
 /** Call the real RAG pipeline: POST /api/v1/student/answers. */
 export async function askQuestion(params: {
-  subject_id: string;
+  subject_id?: string | null;
   module_id?: string | null;
   marks: number;
   question: string;
   model?: string | null;
   session_id?: string | null;
+  attachments?: ApiChatAttachment[];
 }): Promise<ApiAnswerResponse> {
   return fetchApi("/api/v1/student/answers", {
     method: "POST",
     body: JSON.stringify({
-      subject_id: params.subject_id,
+      subject_id: params.subject_id ?? null,
       module_id: params.module_id ?? null,
       marks: params.marks,
       question: params.question,
       model: params.model ?? null,
       session_id: params.session_id ?? null,
+      attachments: params.attachments ?? [],
     }),
   });
 }
@@ -596,9 +612,18 @@ export interface ApiSubjectDocument {
   published_at: string;
 }
 
+export type ApiInputModality = "text" | "image" | "document" | "audio" | "video";
+
+export interface ApiChatAttachment {
+  filename: string;
+  mime_type: string;
+  data_url: string;
+}
+
 export interface ApiModel {
   id: string;
   owned_by: string | null;
+  input_modalities: ApiInputModality[];
 }
 
 export interface ApiModelsResponse {

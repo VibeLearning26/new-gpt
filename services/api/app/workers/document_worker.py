@@ -140,7 +140,7 @@ class DocumentWorker:
                 .with_for_update(skip_locked=True)
             )
             job = result.scalar_one_or_none()
-            logger.info(f"_claim_job: found job = {job.id if job else None}")
+            logger.debug("_claim_job: found job = %s", job.id if job else None)
             if job:
                 # Update job status to RUNNING immediately
                 job.status = ProcessingJobStatus.RUNNING

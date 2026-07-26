@@ -22,6 +22,7 @@ from app.models.answer_rule import AnswerRule
 from app.models.document import DocumentChunk
 from app.models.question import AnswerStatus
 from app.rag.llm import get_llm_client
+from app.rag.modalities import ValidatedAttachment
 from app.rag.ollama_client import OllamaClient, OllamaError
 from app.rag.retrieval import RetrievalService
 
@@ -260,6 +261,7 @@ class AnswerGenerationService:
         module_id: uuid.UUID | None = None,
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        attachments: list[ValidatedAttachment] | None = None,
     ) -> GenerationResult:
         start = time.time()
         s = self.settings
@@ -276,12 +278,16 @@ class AnswerGenerationService:
         if len(scored) < s.RAG_MIN_SOURCES:
             # No approved material for this question — behave like a normal
             # assistant chat instead of refusing (general knowledge only).
+            # Release the retrieval transaction before waiting on the remote
+            # model so one slow answer does not occupy a DB connection.
+            await self.db.commit()
             try:
                 usage = await self.ollama.generate_with_usage(
                     prompt=question,
                     system_prompt=GENERAL_SYSTEM_PROMPT,
                     model=model,
                     history=history,
+                    attachments=attachments,
                 )
             except OllamaError as e:
                 logger.error(f"LLM generation failed: {e}")
@@ -313,9 +319,17 @@ class AnswerGenerationService:
         rule = await self._load_rule(subject_id, marks)
         prompt = build_prompt(question, marks, citations, rule)
 
+        # Retrieval and rule reads are complete. The gateway can take minutes
+        # on free models, so return this connection to the pool first.
+        await self.db.commit()
+
         try:
             usage = await self.ollama.generate_with_usage(
-                prompt=prompt, system_prompt=SYSTEM_PROMPT, model=model, history=history
+                prompt=prompt,
+                system_prompt=SYSTEM_PROMPT,
+                model=model,
+                history=history,
+                attachments=attachments,
             )
         except OllamaError as e:
             logger.error(f"LLM generation failed: {e}")

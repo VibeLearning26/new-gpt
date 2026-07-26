@@ -14,6 +14,7 @@ from app.rag.ollama_client import (
     OllamaResponseError,
 )
 from app.rag.router_client import RouterClient
+from app.rag.modalities import ValidatedAttachment
 
 
 def _mock_httpx(response: MagicMock) -> AsyncMock:
@@ -77,6 +78,40 @@ async def test_generate_with_usage_honors_model_override():
     http_client = mock_cls.return_value.__aenter__.return_value
     assert http_client.post.call_args.kwargs["json"]["model"] == "mimo-v2-flash"
     assert usage.model == "mimo-v2-flash"
+
+
+@pytest.mark.asyncio
+async def test_generate_sends_image_as_openai_content_block():
+    client = RouterClient(
+        base_url="http://localhost:20128/v1", api_key="k", model="mimo-v2.5-free"
+    )
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = 200
+    response.json.return_value = {
+        "choices": [{"message": {"content": "The diagram shows a queue."}}]
+    }
+    attachment = ValidatedAttachment(
+        filename="queue.png",
+        mime_type="image/png",
+        modality="image",
+        data_url="data:image/png;base64,aGVsbG8=",
+        base64_data="aGVsbG8=",
+    )
+
+    with patch("httpx.AsyncClient", return_value=_mock_httpx(response)) as mock_cls:
+        await client.generate_with_usage(
+            "Explain this diagram", attachments=[attachment]
+        )
+
+    message = mock_cls.return_value.__aenter__.return_value.post.call_args.kwargs[
+        "json"
+    ]["messages"][-1]
+    assert message["content"][0] == {
+        "type": "text",
+        "text": "Explain this diagram",
+    }
+    assert message["content"][1]["type"] == "image_url"
+    assert message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 @pytest.mark.asyncio

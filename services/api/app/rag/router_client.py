@@ -15,6 +15,7 @@ from __future__ import annotations
 import httpx
 
 from app.core.config import get_settings
+from app.rag.modalities import ValidatedAttachment, openai_content_parts
 from app.rag.ollama_client import (
     OllamaConnectionError,
     OllamaEmptyResponseError,
@@ -82,8 +83,11 @@ class RouterClient:
         system_prompt: str | None = None,
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        attachments: list[ValidatedAttachment] | None = None,
     ) -> str:
-        usage = await self.generate_with_usage(prompt, system_prompt, model, history)
+        usage = await self.generate_with_usage(
+            prompt, system_prompt, model, history, attachments
+        )
         return usage.content
 
     async def generate_with_usage(
@@ -92,6 +96,7 @@ class RouterClient:
         system_prompt: str | None = None,
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        attachments: list[ValidatedAttachment] | None = None,
     ) -> OllamaUsage:
         """Non-streaming chat completion via POST /v1/chat/completions.
 
@@ -99,12 +104,14 @@ class RouterClient:
         the model can see the session context (no repeated introductions,
         coherent follow-ups).
         """
-        messages: list[dict[str, str]] = []
+        messages: list[dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         if history:
             messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
+        messages.append(
+            {"role": "user", "content": openai_content_parts(prompt, attachments)}
+        )
 
         requested_model = model or self.model
         url = f"{self.base_url}/chat/completions"

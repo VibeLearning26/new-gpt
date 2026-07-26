@@ -502,6 +502,46 @@ body {
   box-shadow: var(--glow-red-soft);
 }
 
+.composer-toolbar {
+  min-height: 44px;
+  padding: 0 6px 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.composer-tool-button {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-line);
+  border-radius: 11px;
+  background: var(--color-panel-2);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+.composer-tool-button:hover {
+  color: var(--color-fg);
+  border-color: #3a3a3a;
+  background: #1b1b1b;
+}
+.composer-tool-button:active {
+  transform: scale(0.94);
+}
+.composer-tool-button:focus-visible {
+  outline: 2px solid rgba(229, 9, 20, 0.65);
+  outline-offset: 2px;
+}
+
 /* ══════════════════════════════════════════════════════════════
    Skeleton loaders
    ══════════════════════════════════════════════════════════════ */

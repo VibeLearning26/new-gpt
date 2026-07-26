@@ -4,8 +4,6 @@ VibeGPT - Document Embedding Service
 
 import logging
 
-from sentence_transformers import SentenceTransformer
-
 logger = logging.getLogger(__name__)
 
 # The specific sentence-transformers model
@@ -34,6 +32,11 @@ class EmbeddingService:
     def _load_model(self):
         try:
             logger.info(f"Loading embedding model {MODEL_NAME}...")
+            # Importing sentence-transformers also imports PyTorch and can take
+            # minutes on constrained Windows Docker hosts. Keep that work out
+            # of API startup; it is needed only when embeddings are requested.
+            from sentence_transformers import SentenceTransformer
+
             # Loads the model. Downloads it on the first run.
             self._model = SentenceTransformer(MODEL_NAME)
             logger.info(f"Model {MODEL_NAME} loaded successfully.")

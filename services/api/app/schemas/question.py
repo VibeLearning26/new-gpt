@@ -11,13 +11,20 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class ChatAttachment(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=3, max_length=100)
+    data_url: str = Field(min_length=16, max_length=12_000_000)
+
+
 class AskQuestionRequest(BaseModel):
-    subject_id: UUID
+    subject_id: UUID | None = None
     module_id: UUID | None = None
     marks: int = Field(ge=1, le=20)
     question: str = Field(min_length=1, max_length=2000)
     model: str | None = Field(default=None, max_length=100)
     session_id: UUID | None = None
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=4)
 
 
 class SourceInfo(BaseModel):
@@ -45,6 +52,8 @@ class AnswerResponse(BaseModel):
     word_count: int | None = None
     marks: int
     question: str
+    subject_id: UUID
+    subject_name: str
     sources: list[SourceInfo] = []
     model: str | None = None
     processing_ms: int | None = None

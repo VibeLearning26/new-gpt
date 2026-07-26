@@ -10,6 +10,9 @@ import {
   Star,
   Warning,
   DocumentText,
+  Paperclip,
+  CloseCircle,
+  Image as ImageIcon,
 } from "reicon-react";
 
 // react-markdown + remark-gfm are heavy — load them only on the chat page,
@@ -32,6 +35,8 @@ import {
   type ApiModel,
   type ApiModule,
   type ApiSessionMessage,
+  type ApiChatAttachment,
+  type ApiInputModality,
 } from "@/lib/api";
 import { Dropdown } from "@/components/Dropdown";
 
@@ -52,6 +57,35 @@ interface ThreadItem {
   error: string | null;
   feedbackRating: number | null;
   feedbackComment: string | null;
+  attachmentNames: string[];
+}
+
+const ACCEPTED_MIME_TYPES: Record<Exclude<ApiInputModality, "text">, string[]> = {
+  image: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+  document: ["application/pdf", "text/plain"],
+  audio: ["audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/webm"],
+  video: ["video/mp4", "video/webm", "video/quicktime"],
+};
+
+function modalityForFile(file: File): ApiInputModality | null {
+  for (const [modality, mimeTypes] of Object.entries(ACCEPTED_MIME_TYPES)) {
+    if (mimeTypes.includes(file.type)) return modality as ApiInputModality;
+  }
+  return null;
+}
+
+function fileToAttachment(file: File): Promise<ApiChatAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.onload = () =>
+      resolve({
+        filename: file.name,
+        mime_type: file.type,
+        data_url: String(reader.result),
+      });
+    reader.readAsDataURL(file);
+  });
 }
 
 function mapSources(sources: ApiSessionMessage["sources"]) {
@@ -97,6 +131,7 @@ function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
     error: null,
     feedbackRating: m.feedback_rating,
     feedbackComment: m.feedback_comment,
+    attachmentNames: [],
     answer: {
       question: m.question,
       marks: m.marks,
@@ -196,10 +231,20 @@ function ChatPage({
   const [selectedModel, setSelectedModel] = useState("");
   const [modelProvider, setModelProvider] = useState<"ollama" | "router">("ollama");
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeSessionId = sessionParam ?? createdSessionId;
-  const selectedSubjectId = chosenSubjectId ?? subjectParam ?? realSubjects[0]?.id ?? "";
+  const selectedSubjectId = chosenSubjectId ?? subjectParam ?? "";
   const activeModule = modules.find((m) => m.id === moduleParam) ?? null;
+  const selectedModelInfo = models.find((model) => model.id === selectedModel);
+  const inputModalities = selectedModelInfo?.input_modalities ?? ["text"];
+  const mediaModalities = inputModalities.filter(
+    (item): item is Exclude<ApiInputModality, "text"> => item !== "text",
+  );
+  const acceptedMimeTypes = mediaModalities.flatMap(
+    (modality) => ACCEPTED_MIME_TYPES[modality],
+  );
 
   const refreshSessions = useCallback(() => {
     window.dispatchEvent(new Event("vibegpt:sessions-changed"));
@@ -263,7 +308,7 @@ function ChatPage({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [thread, loading]);
 
-  const run = async (q: string, m: number) => {
+  const run = async (q: string, m: number, files: File[] = []) => {
     const realSession = hasRealSession();
     const route = realSession ? null : routeQuestion(q, semester);
     setDetected(route);
@@ -282,6 +327,7 @@ function ChatPage({
       error: null,
       feedbackRating: null,
       feedbackComment: null,
+      attachmentNames: files.map((file) => file.name),
     };
     setThread((prev) => [...prev, pendingItem]);
 
@@ -290,47 +336,46 @@ function ChatPage({
 
     if (realSession) {
       const real = realSubjects.find((subject) => subject.id === selectedSubjectId);
-      if (real) {
-        try {
-          const api = await askQuestion({
-            subject_id: real.id,
-            module_id: activeModule?.id ?? null,
-            marks: m,
-            question: q,
-            model: selectedModel || null,
-            session_id: activeSessionId,
-          });
-          patchItem({
-            logId: api.id,
-            model: api.model,
-            answer: apiAnswerToStudyAnswer(api, real.name, activeModule?.name ?? "Whole subject"),
-            status: "done",
-          });
-          if (!activeSessionId && api.session_id) {
-            setCreatedSessionId(api.session_id);
-            refreshSessions();
-            router.replace(`/student/chat?session=${api.session_id}`);
-          } else {
-            refreshSessions();
-          }
-          setLoading(false);
-          return;
-        } catch (error) {
-          patchItem({
-            status: "error",
-            error:
-              error instanceof Error ? error.message : "The grounded answer service is unavailable.",
-          });
-          setLoading(false);
-          return;
+      try {
+        const apiAttachments = await Promise.all(files.map(fileToAttachment));
+        const api = await askQuestion({
+          subject_id: real?.id ?? null,
+          module_id: real ? activeModule?.id ?? null : null,
+          marks: m,
+          question: q,
+          model: selectedModel || null,
+          session_id: activeSessionId,
+          attachments: apiAttachments,
+        });
+        const resolved = realSubjects.find((subject) => subject.id === api.subject_id);
+        patchItem({
+          logId: api.id,
+          model: api.model,
+          answer: apiAnswerToStudyAnswer(
+            api,
+            resolved?.name ?? api.subject_name,
+            real ? activeModule?.name ?? "Whole subject" : "Auto-detected",
+          ),
+          status: "done",
+        });
+        if (!activeSessionId && api.session_id) {
+          setCreatedSessionId(api.session_id);
+          refreshSessions();
+          router.replace(`/student/chat?session=${api.session_id}`);
+        } else {
+          refreshSessions();
         }
+        setLoading(false);
+        return;
+      } catch (error) {
+        patchItem({
+          status: "error",
+          error:
+            error instanceof Error ? error.message : "The grounded answer service is unavailable.",
+        });
+        setLoading(false);
+        return;
       }
-      patchItem({
-        status: "error",
-        error: "Select an accessible subject first, or ask an admin to publish material for it.",
-      });
-      setLoading(false);
-      return;
     }
 
     // Demo mode (no backend session) — mock answer.
@@ -344,10 +389,75 @@ function ChatPage({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const q = question.trim();
+    const q = question.trim() || (attachments.length ? "Analyze the attached material." : "");
     if (!q || loading) return;
-    run(q, marks);
+    const files = attachments;
+    run(q, marks, files);
     setQuestion("");
+    setAttachments([]);
+  };
+
+  const addAttachments = (files: FileList | File[] | null) => {
+    if (!files) return;
+    setRunError(null);
+    const next = Array.from(files);
+    const invalid = next.find((file) => {
+      const modality = modalityForFile(file);
+      return !modality || !inputModalities.includes(modality);
+    });
+    if (invalid) {
+      setRunError(`${selectedModel || "This model"} cannot accept ${invalid.name}.`);
+      return;
+    }
+    const oversized = next.find((file) => file.size > 8 * 1024 * 1024);
+    if (oversized) {
+      setRunError(`${oversized.name} is larger than the 8 MB limit.`);
+      return;
+    }
+    setAttachments((current) => {
+      const combined = [...current, ...next];
+      if (combined.length > 4) {
+        setRunError("You can attach up to 4 files at once.");
+        return current;
+      }
+      return combined;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardImages = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+      .map(
+        (file, index) =>
+          new File(
+            [file],
+            `pasted-image-${Date.now()}${index ? `-${index + 1}` : ""}.${
+              file.type.split("/")[1]?.replace("jpeg", "jpg") || "png"
+            }`,
+            { type: file.type, lastModified: Date.now() },
+          ),
+      );
+
+    if (clipboardImages.length === 0) return;
+    event.preventDefault();
+    addAttachments(clipboardImages);
+  };
+
+  const changeModel = (modelId: string) => {
+    const nextModel = models.find((model) => model.id === modelId);
+    const nextModalities = nextModel?.input_modalities ?? ["text"];
+    const removed = attachments.some((file) => {
+      const modality = modalityForFile(file);
+      return !modality || !nextModalities.includes(modality);
+    });
+    if (removed) {
+      setAttachments([]);
+      setRunError("Attachments were removed because the selected model cannot read them.");
+    }
+    setSelectedModel(modelId);
   };
 
   const copy = (body: string) => {
@@ -401,7 +511,8 @@ function ChatPage({
           </h1>
           <p className="text-xs text-faint truncate">
             {realSubjects.length > 0
-              ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.name
+              ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.name ??
+                "Auto-detect subject"
               : semLabel(semester)}
             {activeModule
               ? ` · ${activeModule.name}`
@@ -411,18 +522,6 @@ function ChatPage({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {models.length > 0 && (
-            <Dropdown
-              variant="chip"
-              ariaLabel="Model"
-              value={selectedModel}
-              onChange={setSelectedModel}
-              options={models.map((m) => ({
-                value: m.id,
-                label: m.owned_by ? `${m.id} · ${m.owned_by}` : m.id,
-              }))}
-            />
-          )}
           <span
             className="badge badge-red hidden sm:inline-flex"
             title={`Provider: ${modelProvider}`}
@@ -491,9 +590,15 @@ function ChatPage({
                     {item.model && <span className="badge badge-neutral">{item.model}</span>}
                     <span className="badge badge-neutral">
                       {realSubjects.length > 0
-                        ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.code
+                        ? realSubjects.find((subject) => subject.id === selectedSubjectId)?.code ??
+                          "Auto"
                         : semLabel(semester)}
                     </span>
+                    {item.attachmentNames.map((name) => (
+                      <span key={name} className="badge badge-neutral">
+                        <ImageIcon size={12} /> {name}
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -637,11 +742,15 @@ function ChatPage({
                   value={selectedSubjectId}
                   onChange={(v) => {
                     setChosenSubjectId(v);
+                    if (!v) setModules([]);
                   }}
-                  options={realSubjects.map((subject) => ({
-                    value: subject.id,
-                    label: `${subject.code} · ${subject.name}`,
-                  }))}
+                  options={[
+                    { value: "", label: "Auto-detect from question" },
+                    ...realSubjects.map((subject) => ({
+                      value: subject.id,
+                      label: `${subject.code} · ${subject.name}`,
+                    })),
+                  ]}
                 />
               ) : (
                 <Dropdown
@@ -704,10 +813,34 @@ function ChatPage({
             </div>
           </div>
 
-          <div className="composer flex items-end gap-2 p-2.5">
+          <div className="composer p-2.5">
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-2 pt-1 pb-2" aria-label="Attachments">
+                {attachments.map((file, index) => (
+                  <span
+                    key={`${file.name}-${file.lastModified}-${index}`}
+                    className="inline-flex max-w-full items-center gap-2 rounded-lg border border-brand-border bg-brand-soft px-2.5 py-1.5 text-xs text-fg"
+                  >
+                    <ImageIcon size={14} className="shrink-0 text-brand-accent" />
+                    <span className="max-w-44 truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAttachments((current) => current.filter((_, i) => i !== index))
+                      }
+                      className="text-faint transition-colors hover:text-fg"
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      <CloseCircle size={14} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
+              onPaste={handlePaste}
               placeholder="Ask a question — VibeGPT finds the right subject…"
               rows={1}
               maxLength={2000}
@@ -717,24 +850,65 @@ function ChatPage({
                   handleSubmit(e);
                 }
               }}
-              className="flex-1 bg-transparent resize-none outline-none text-[15px] px-2 py-2 max-h-40 placeholder:text-faint"
+              className="w-full bg-transparent resize-none outline-none text-[15px] px-2 py-2 max-h-40 placeholder:text-faint"
             />
-            <button
-              type="submit"
-              disabled={loading || !question.trim()}
-              className="btn-primary h-11 w-11 !px-0 rounded-xl"
-              aria-label="Send"
-            >
-              {loading ? (
-                <span className="loading-dots"><span></span><span></span><span></span></span>
-              ) : (
-                "↑"
-              )}
-            </button>
+            <div className="composer-toolbar">
+              <div className="flex min-w-0 items-center gap-2">
+                {mediaModalities.length > 0 && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept={acceptedMimeTypes.join(",")}
+                      className="sr-only"
+                      onChange={(event) => addAttachments(event.target.files)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="composer-tool-button"
+                      title={`Attach ${mediaModalities.join(", ")} input`}
+                      aria-label={`Attach ${mediaModalities.join(", ")} input`}
+                    >
+                      <Paperclip size={16} />
+                    </button>
+                  </>
+                )}
+                {models.length > 0 && (
+                  <Dropdown
+                    variant="chip"
+                    direction="up"
+                    ariaLabel="Model"
+                    value={selectedModel}
+                    onChange={changeModel}
+                    options={models.map((m) => ({
+                      value: m.id,
+                      label: `${m.id}${m.input_modalities.length > 1 ? " · multimodal" : ""}${
+                        m.owned_by ? ` · ${m.owned_by}` : ""
+                      }`,
+                    }))}
+                  />
+                )}
+              </div>
+              <button
+                type="submit"
+                disabled={loading || (!question.trim() && attachments.length === 0)}
+                className="btn-primary h-11 w-11 !px-0 rounded-xl shrink-0"
+                aria-label="Send"
+              >
+                {loading ? (
+                  <span className="loading-dots"><span></span><span></span><span></span></span>
+                ) : (
+                  "↑"
+                )}
+              </button>
+            </div>
           </div>
           <p className="text-center text-[11px] text-faint mt-2">
             Subject answers prioritise admin-approved materials · general questions use the
-            model&apos;s own knowledge · Enter to send, Shift+Enter for a new line
+            model&apos;s own knowledge · supported attachments follow the selected model ·
+            paste images with Ctrl+V · Enter to send, Shift+Enter for a new line
           </p>
         </form>
       </div>

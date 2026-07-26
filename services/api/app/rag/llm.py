@@ -12,6 +12,7 @@ import time
 from app.core.config import get_settings
 from app.rag.ollama_client import OllamaClient
 from app.rag.router_client import RouterClient
+from app.rag.modalities import model_input_modalities
 
 
 def get_llm_client() -> OllamaClient | RouterClient:
@@ -46,21 +47,23 @@ class ModelCatalog:
 
     def __init__(self, ttl_seconds: float = 60.0):
         self.ttl = ttl_seconds
-        self._cache: tuple[float, list[str]] | None = None
+        self._cache: tuple[float, list[dict]] | None = None
 
-    async def available_models(self) -> list[str]:
+    async def available_model_records(self) -> list[dict]:
         settings = get_settings()
         if settings.LLM_PROVIDER != "router":
-            return [settings.OLLAMA_MODEL]
+            return [{"id": settings.OLLAMA_MODEL, "owned_by": "ollama"}]
 
         now = time.monotonic()
         if self._cache is not None and now - self._cache[0] < self.ttl:
             return self._cache[1]
 
-        raw = await RouterClient().list_models()
-        models = [m["id"] for m in filter_gateway_models(raw)]
-        self._cache = (now, models)
-        return models
+        records = filter_gateway_models(await RouterClient().list_models())
+        self._cache = (now, records)
+        return records
+
+    async def available_models(self) -> list[str]:
+        return [model["id"] for model in await self.available_model_records()]
 
     async def default_model(self) -> str:
         """Preferred default: configured MiMo model, else any MiMo, else first."""
@@ -77,6 +80,16 @@ class ModelCatalog:
 
     async def is_available(self, model: str) -> bool:
         return model in await self.available_models()
+
+    async def model_record(self, model: str) -> dict | None:
+        return next(
+            (item for item in await self.available_model_records() if item["id"] == model),
+            None,
+        )
+
+    async def input_modalities(self, model: str) -> list[str]:
+        record = await self.model_record(model)
+        return model_input_modalities(record or {"id": model})
 
 
 _model_catalog = ModelCatalog()

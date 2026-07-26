@@ -787,8 +787,43 @@ async def list_academic_years(current_user: AdminUser, db: DbSession):
 
 @router.post("/subjects", response_model=SubjectResponse, status_code=201)
 async def create_subject(body: SubjectCreate, current_user: AdminUser, db: DbSession):
-    subj = Subject(**body.model_dump())
+    code = body.code.strip().upper()
+    existing_result = await db.execute(
+        select(Subject).where(
+            Subject.code == code,
+            Subject.department_id == body.department_id,
+            Subject.semester_id == body.semester_id,
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+    if existing is not None:
+        if existing.archived_at is not None:
+            raise ConflictError(
+                f"Subject {code} already exists in Archived subjects. Restore it instead."
+            )
+        raise ConflictError(
+            f"Subject {code} already exists for this department and semester."
+        )
+
+    data = body.model_dump()
+    data["code"] = code
+    data["name"] = body.name.strip()
+    subj = Subject(**data)
     db.add(subj)
+    await db.flush()
+
+    # Give every new subject the curriculum's standard upload targets.
+    db.add_all(
+        [
+            Module(
+                subject_id=subj.id,
+                number=number,
+                name=f"Module {number}",
+                description="Default curriculum module",
+            )
+            for number in range(1, 5)
+        ]
+    )
     await db.flush()
     await db.refresh(subj)
     return SubjectResponse.model_validate(subj)
@@ -808,7 +843,24 @@ async def update_subject(subject_id: UUID, body: SubjectUpdate, current_user: Ad
     subj = result.scalar_one_or_none()
     if not subj:
         raise NotFoundError("Subject")
-    for key, val in body.model_dump(exclude_unset=True).items():
+    update_data = body.model_dump(exclude_unset=True)
+    if "name" in update_data and update_data["name"] is not None:
+        update_data["name"] = update_data["name"].strip()
+    if "code" in update_data and update_data["code"] is not None:
+        update_data["code"] = update_data["code"].strip().upper()
+        duplicate = await db.execute(
+            select(Subject.id).where(
+                Subject.id != subject_id,
+                Subject.code == update_data["code"],
+                Subject.department_id == subj.department_id,
+                Subject.semester_id == subj.semester_id,
+            )
+        )
+        if duplicate.scalar_one_or_none() is not None:
+            raise ConflictError(
+                f"Subject {update_data['code']} already exists for this department and semester."
+            )
+    for key, val in update_data.items():
         setattr(subj, key, val)
     await db.flush()
     await db.refresh(subj)
@@ -1140,6 +1192,7 @@ async def upload_document(
         select(Document)
         .where(Document.file_hash == file_hash)
         .where(Document.archived_at.is_(None))
+        .where(Document.status != DocumentStatus.FAILED)
     )
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="Document already exists")
