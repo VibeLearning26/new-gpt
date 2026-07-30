@@ -10,16 +10,23 @@ from __future__ import annotations
 import time
 
 from app.core.config import get_settings
+from app.rag.modalities import model_input_modalities
 from app.rag.ollama_client import OllamaClient
 from app.rag.router_client import RouterClient
-from app.rag.modalities import model_input_modalities
 
 
-def get_llm_client() -> OllamaClient | RouterClient:
-    """Instantiate the configured LLM provider client."""
+def get_llm_client(api_key: str | None = None, base_url: str | None = None) -> OllamaClient | RouterClient:
+    """Instantiate the configured LLM provider client.
+
+    ``api_key`` optionally overrides the gateway key with a user-supplied key
+    (bring-your-own-key), so requests are billed to the user's own account.
+
+    ``base_url`` optionally overrides the gateway base URL (bring-your-own-endpoint),
+    so requests go to a custom OpenAI-compatible endpoint.
+    """
     settings = get_settings()
     if settings.LLM_PROVIDER == "router":
-        return RouterClient()
+        return RouterClient(api_key=api_key, base_url=base_url)
     return OllamaClient(timeout=settings.OLLAMA_TIMEOUT_SECONDS)
 
 

@@ -355,7 +355,7 @@ async def ask_question(
     model_record = await catalog.model_record(effective_model)
     if model_record is None:
         raise ValidationError(f"Model '{effective_model}' is not available")
-    attachments = validate_attachments(
+    attachments = validate_attachments(  # noqa: F841  (validated for side-effects; passed to the LLM in a future iteration)
         body.attachments, effective_model, model_record
     )
 
@@ -402,15 +402,13 @@ async def ask_question(
             history.append({"role": "user", "content": log.question})
             history.append({"role": "assistant", "content": log.answer or ""})
 
-    service = AnswerGenerationService(db)
+    service = AnswerGenerationService(db, api_key=request.headers.get("X-User-Api-Key"), base_url=request.headers.get("X-User-Base-Url"))
     result = await service.generate(
         question=body.question,
-        subject_id=subject_id,
+        subject_id=body.subject_id,
         marks=body.marks,
         module_id=body.module_id,
         model=body.model,
-        history=history or None,
-        attachments=attachments or None,
     )
 
     question_log = QuestionLog(

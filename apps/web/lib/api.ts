@@ -40,6 +40,39 @@ export function clearAuthSession(): void {
   sessionStorage.removeItem("vibegpt_user");
 }
 
+/* ── Bring-your-own API key ───────────────────────────────────
+   Stored locally in the browser (the user's own key, their device).
+   Sent to the backend as X-User-Api-Key, which forwards it to the gateway
+   so requests are billed to the user's own account. */
+const USER_API_KEY = "vibegpt_user_api_key";
+
+export function getUserApiKey(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(USER_API_KEY);
+}
+
+export function setUserApiKey(key: string | null): void {
+  if (typeof window === "undefined") return;
+  if (key) localStorage.setItem(USER_API_KEY, key);
+  else localStorage.removeItem(USER_API_KEY);
+}
+
+/* ── Bring-your-own base URL ────────────────────────────────────
+   Optional custom base URL for OpenAI-compatible endpoints.
+   Sent to the backend as X-User-Base-Url. */
+const USER_BASE_URL = "vibegpt_user_base_url";
+
+export function getUserBaseUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(USER_BASE_URL);
+}
+
+export function setUserBaseUrl(url: string | null): void {
+  if (typeof window === "undefined") return;
+  if (url) localStorage.setItem(USER_BASE_URL, url);
+  else localStorage.removeItem(USER_BASE_URL);
+}
+
 function handleUnauthorized(errorDetail: string): void {
   if (typeof window === "undefined") return;
   clearAuthSession();
@@ -98,6 +131,14 @@ async function requestApi(endpoint: string, options: RequestInit = {}): Promise<
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
+  const userKey = getUserApiKey();
+  if (userKey) {
+    headers.set("X-User-Api-Key", userKey);
+  }
+  const userBaseUrl = getUserBaseUrl();
+  if (userBaseUrl) {
+    headers.set("X-User-Base-Url", userBaseUrl);
+  }
   if (!headers.has("Content-Type") && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
@@ -120,6 +161,12 @@ async function requestApi(endpoint: string, options: RequestInit = {}): Promise<
       retryHeaders.set("Authorization", `Bearer ${newToken}`);
       if (!retryHeaders.has("Content-Type") && !(options.body instanceof FormData)) {
         retryHeaders.set("Content-Type", "application/json");
+      }
+      if (userKey) {
+        retryHeaders.set("X-User-Api-Key", userKey);
+      }
+      if (userBaseUrl) {
+        retryHeaders.set("X-User-Base-Url", userBaseUrl);
       }
       response = await doFetch(retryHeaders);
     }
@@ -404,6 +451,23 @@ export interface ApiRouterStatus {
   available_models: string[];
   active_default: string | null;
 }
+
+export interface ApiPublicStats {
+  active_now: number;
+  active_24h: number;
+  total_questions: number;
+  total_subjects: number;
+  published_documents: number;
+  total_chunks: number;
+  avg_rating: number | null;
+  total_visitors: number;
+}
+
+export const publicApi = {
+  getStats: (): Promise<ApiPublicStats> => fetchApi("/api/v1/stats"),
+  trackVisit: (): Promise<{ total_visitors: number }> =>
+    fetchApi("/api/v1/visit", { method: "POST" }),
+};
 
 export const adminApi = {
   getDashboard: (): Promise<ApiDashboard> =>

@@ -215,11 +215,13 @@ class AnswerGenerationService:
         db: AsyncSession,
         retrieval: RetrievalService | None = None,
         ollama: OllamaClient | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ):
         settings = get_settings()
         self.db = db
         self.retrieval = retrieval or RetrievalService(db)
-        self.ollama = ollama or get_llm_client()
+        self.ollama = ollama or get_llm_client(api_key, base_url)
         self.settings = settings
 
     async def _load_rule(self, subject_id: uuid.UUID, marks: int) -> AnswerRule | None:

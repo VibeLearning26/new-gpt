@@ -13,11 +13,15 @@ import {
   Paperclip,
   CloseCircle,
   Image as ImageIcon,
+  Key,
 } from "reicon-react";
+import { ModelSelector } from "@/components/ui/ModelSelector";
+import { getUserApiKey, setUserApiKey, getUserBaseUrl, setUserBaseUrl } from "@/lib/api";
 
 // react-markdown + remark-gfm are heavy — load them only on the chat page,
 // only when an answer renders.
 const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
+const CaterpillarReasoning = dynamic(() => import("@/components/ui/CaterpillarReasoningIndicator").then(m => m.CaterpillarReasoningIndicator), { ssr: false });
 import {
   MARKS_OPTIONS,
   SEMESTER_OPTIONS,
@@ -146,6 +150,7 @@ function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
   };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained as fallback
 function AnswerSkeleton() {
   return (
     <div className="answer-card space-y-3 fade-in">
@@ -229,6 +234,11 @@ function ChatPage({
   const [modules, setModules] = useState<ApiModule[]>([]);
   const [models, setModels] = useState<ApiModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(() => getUserApiKey() ?? "");
+  const [savedKey, setSavedKey] = useState<string | null>(() => getUserApiKey());
+  const [baseUrlInput, setBaseUrlInput] = useState(() => getUserBaseUrl() ?? "");
+  const [savedBaseUrl, setSavedBaseUrl] = useState<string | null>(() => getUserBaseUrl());
   const [modelProvider, setModelProvider] = useState<"ollama" | "router">("ollama");
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -307,6 +317,19 @@ function ChatPage({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [thread, loading]);
+
+  // Also scroll after the reasoning animation renders (it mounts after thread updates)
+  useEffect(() => {
+    if (!loading) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const scrollDown = () => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    };
+    scrollDown();
+    const timer = setTimeout(scrollDown, 150);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   const run = async (q: string, m: number, files: File[] = []) => {
     const realSession = hasRealSession();
@@ -604,7 +627,7 @@ function ChatPage({
               </div>
 
               {/* Assistant */}
-              {item.status === "pending" && <AnswerSkeleton />}
+              {item.status === "pending" && <CaterpillarReasoning isProcessing={true} />}
 
               {item.status === "error" && (
                 <div className="panel p-4 border border-err/40" role="alert">
@@ -813,6 +836,78 @@ function ChatPage({
             </div>
           </div>
 
+          {keyOpen && (
+            <div className="mx-3 mb-2 rounded-xl border border-brand-border bg-panel-2 p-3.5 fade-in">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[13px] font-semibold text-fg">Use your own API key</p>
+                {savedKey && (
+                  <span className="badge badge-success !text-[10px]">key active</span>
+                )}
+                {savedBaseUrl && (
+                  <span className="badge !text-[10px] bg-brand-soft text-brand-accent">
+                    custom endpoint
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-faint">
+                Requests will be billed to your own account instead of the shared
+                campus quota. Stored only in this browser.
+              </p>
+              <div className="mt-2.5 flex gap-2">
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder="sk-…"
+                  autoComplete="off"
+                  className="input h-9 flex-1 !text-[13px]"
+                  aria-label="Your API key"
+                />
+                <input
+                  type="text"
+                  value={baseUrlInput}
+                  onChange={(e) => setBaseUrlInput(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  autoComplete="off"
+                  className="input h-9 flex-1 !text-[13px]"
+                  aria-label="Custom API base URL (optional)"
+                />
+                <button
+                  type="button"
+                  className="btn-primary h-9 !px-4 !text-[13px]"
+                  disabled={!apiKeyInput.trim()}
+                  onClick={() => {
+                    setUserApiKey(apiKeyInput.trim());
+                    setSavedKey(apiKeyInput.trim());
+                    if (baseUrlInput.trim()) {
+                      setUserBaseUrl(baseUrlInput.trim());
+                      setSavedBaseUrl(baseUrlInput.trim());
+                    }
+                    setKeyOpen(false);
+                  }}
+                >
+                  Save
+                </button>
+                {(savedKey || savedBaseUrl) && (
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 !px-3 !text-[13px]"
+                    onClick={() => {
+                      setUserApiKey(null);
+                      setSavedKey(null);
+                      setApiKeyInput("");
+                      setUserBaseUrl(null);
+                      setSavedBaseUrl(null);
+                      setBaseUrlInput("");
+                    }}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="composer p-2.5">
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 px-2 pt-1 pb-2" aria-label="Attachments">
@@ -876,20 +971,26 @@ function ChatPage({
                   </>
                 )}
                 {models.length > 0 && (
-                  <Dropdown
-                    variant="chip"
-                    direction="up"
-                    ariaLabel="Model"
+                  <ModelSelector
                     value={selectedModel}
                     onChange={changeModel}
-                    options={models.map((m) => ({
-                      value: m.id,
-                      label: `${m.id}${m.input_modalities.length > 1 ? " · multimodal" : ""}${
-                        m.owned_by ? ` · ${m.owned_by}` : ""
-                      }`,
+                    models={models.map((m) => ({
+                      id: m.id,
+                      ownedBy: m.owned_by,
+                      inputModalities: m.input_modalities as string[],
                     }))}
                   />
                 )}
+                <button
+                  type="button"
+                  onClick={() => setKeyOpen((v) => !v)}
+                  className={`composer-tool-button ${keyOpen || savedKey ? "!text-brand-accent !border-brand-border" : ""}`}
+                  title="Use your own API key"
+                  aria-label="Use your own API key"
+                  aria-expanded={keyOpen}
+                >
+                  <Key size={16} />
+                </button>
               </div>
               <button
                 type="submit"

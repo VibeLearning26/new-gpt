@@ -65,12 +65,12 @@ services:
   # Dashboard: http://localhost:20128/dashboard — add upstream provider
   # keys (Xiaomi MiMo, ...) there. Bound to 127.0.0.1 only: the dashboard
   # and API surface never leave this host.
+  #
+  # Mounts your local ~/.omniroute config so your configured provider keys
+  # are reused. Stop any natively-running OmniRoute first to avoid two
+  # processes sharing the same SQLite database.
   router:
     <<: *hardened
-    # Optional external-model gateway. The default VibeGPT setup uses Ollama,
-    # so keep this heavyweight third-party service out of normal startup.
-    # Enable only when needed with: docker compose --profile router up -d
-    profiles: ["router"]
     build:
       context: .
       dockerfile: router.Dockerfile
@@ -80,7 +80,7 @@ services:
     environment:
       - PORT=20128
     volumes:
-      - router_data:/root/.omniroute
+      - ~/.omniroute:/root/.omniroute
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:20128/v1/models').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -117,6 +117,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
+      ROUTER_BASE_URL: http://router:20128/v1
       PYTHONPATH: /app
     ports:
       - "127.0.0.1:8000:8000"
@@ -148,6 +149,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
+      ROUTER_BASE_URL: http://router:20128/v1
       PYTHONPATH: /app
     volumes:
       - ../services/api:/app
@@ -162,8 +164,6 @@ volumes:
   pgdata:
     driver: local
   ollama_data:
-    driver: local
-  router_data:
     driver: local
   uploads:
     driver: local
