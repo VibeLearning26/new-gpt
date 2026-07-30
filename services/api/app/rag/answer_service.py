@@ -17,6 +17,7 @@ import uuid
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.academic import Subject
 from app.models.answer_rule import AnswerRule
 from app.models.question import AnswerStatus, QuestionLog, QuestionSource
 from app.rag.ollama_client import OllamaClient
@@ -66,6 +67,9 @@ class AnswerService:
         # 1. Fetch matching rule
         rule = await self._get_rule(db, subject_id, marks)
 
+        # Resolve the subject's display name for the response payload
+        subject_name = await self._get_subject_name(db, subject_id)
+
         # 2. Retrieve relevant context chunks
         relevant_chunks = await self.retrieval.retrieve(
             db=db,
@@ -112,6 +116,8 @@ class AnswerService:
                 word_count=0,
                 marks=marks,
                 question=question,
+                subject_id=subject_id,
+                subject_name=subject_name,
                 sources=[],
                 model=log.model_name,
                 processing_ms=log.processing_time_ms,
@@ -261,6 +267,8 @@ class AnswerService:
             word_count=log.word_count,
             marks=marks,
             question=question,
+            subject_id=subject_id,
+            subject_name=subject_name,
             sources=source_infos,
             model=log.model_name,
             processing_ms=log.processing_time_ms,
@@ -330,3 +338,9 @@ class AnswerService:
                 require_example=True,
                 require_conclusion=True,
             )
+
+    async def _get_subject_name(self, db: AsyncSession, subject_id: uuid.UUID) -> str:
+        """Resolve the subject's display name for the response payload."""
+        result = await db.execute(select(Subject).where(Subject.id == subject_id))
+        subject = result.scalar_one_or_none()
+        return subject.name if subject else "Study Material"

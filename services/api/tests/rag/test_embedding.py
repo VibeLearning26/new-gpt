@@ -7,7 +7,7 @@ from app.rag.embedding import EmbeddingService
 
 @pytest.fixture
 def mock_sentence_transformer():
-    with patch("app.rag.embedding.SentenceTransformer") as mock_st:
+    with patch("sentence_transformers.SentenceTransformer") as mock_st:
         mock_instance = MagicMock()
         mock_st.return_value = mock_instance
         yield mock_instance
@@ -30,7 +30,7 @@ def test_embed_query_empty_input():
     EmbeddingService._instance = None
     # We mock the constructor to avoid downloading the real model if not needed,
     # though empty input check happens before model inference.
-    with patch("app.rag.embedding.SentenceTransformer"):
+    with patch("sentence_transformers.SentenceTransformer"):
         service = EmbeddingService()
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             service.embed_query("")

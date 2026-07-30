@@ -184,7 +184,9 @@ async def test_answer_service_returns_answer_response_on_success():
         retrieval_service=mock_retrieval,
     )
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -218,7 +220,9 @@ async def test_answer_service_returns_insufficient_context_when_no_chunks():
         retrieval_service=mock_retrieval,
     )
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -257,7 +261,9 @@ async def test_answer_service_returns_insufficient_when_model_says_so():
         retrieval_service=mock_retrieval,
     )
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -288,7 +294,9 @@ async def test_answer_service_marks_validation_failed_when_word_count_low():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -326,7 +334,9 @@ async def test_answer_service_marks_validation_failed_when_citations_missing():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -360,7 +370,9 @@ async def test_answer_service_propagates_ollama_connection_error():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), pytest.raises(OllamaConnectionError):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ), pytest.raises(OllamaConnectionError):
         await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -389,7 +401,9 @@ async def test_answer_service_propagates_ollama_timeout_error():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), pytest.raises(OllamaTimeoutError):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ), pytest.raises(OllamaTimeoutError):
         await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -426,7 +440,9 @@ async def test_answer_service_labels_multiple_sources_correctly():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
@@ -459,7 +475,9 @@ async def test_answer_service_reports_processing_time():
     db = make_db_session()
     service = AnswerService(ollama_client=mock_ollama, retrieval_service=mock_retrieval)
 
-    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)):
+    with patch.object(service, "_get_rule", AsyncMock(return_value=rule)), patch.object(
+        service, "_get_subject_name", AsyncMock(return_value="Test Subject")
+    ):
         response = await service.generate_answer(
             db=db,
             user_id=uuid.uuid4(),
