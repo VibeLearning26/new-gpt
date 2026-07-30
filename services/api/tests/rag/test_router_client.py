@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from app.rag.modalities import ValidatedAttachment
 from app.rag.ollama_client import (
     OllamaEmptyResponseError,
     OllamaResponseError,
 )
 from app.rag.router_client import RouterClient
-from app.rag.modalities import ValidatedAttachment
 
 
 def _mock_httpx(response: MagicMock) -> AsyncMock:
