@@ -11,7 +11,6 @@ const NAV_ITEMS = [
   { label: "Sources", href: "#citations-act" },
   { label: "Mark scheme", href: "#marks-act" },
   { label: "Scale", href: "#scale-act" },
-  { label: "Team", href: "/team" },
 ];
 
 export function LandingNav() {

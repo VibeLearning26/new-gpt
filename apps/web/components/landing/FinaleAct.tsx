@@ -19,14 +19,14 @@ export function FinaleAct() {
   const reduced = useReducedMotion();
 
   return (
-    <section id="finale-act" className="relative flex min-h-screen flex-col justify-center overflow-hidden px-6 pb-20 pt-28 md:px-8">
+    <section id="finale-act" className="relative flex min-h-screen flex-col overflow-hidden px-6 pt-28 md:px-8">
       {/* Warm seat behind the climax */}
       <div
         className="pointer-events-none absolute inset-0 -z-10"
         style={{ background: "radial-gradient(60% 50% at 50% 40%, rgba(229,9,20,0.09), transparent 70%)" }}
       />
 
-      <div className="mx-auto w-full max-w-5xl text-center">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center text-center">
         <h2 className="font-bold">
           <MaskLine>Exam season</MaskLine>
           <MaskLine delay={0.12}>
@@ -71,8 +71,8 @@ export function FinaleAct() {
         </motion.p>
       </div>
 
-      {/* Course-code ticker */}
-      <div className="mt-20 border-y border-[var(--color-line)] py-6">
+      {/* Course-code ticker — flows straight into the end credits below */}
+      <div className="border-t border-[var(--color-line)] py-6">
         <Marquee speed={36} className="font-mono text-sm text-[var(--color-faint)]">
           <div className="flex gap-8 pr-8">
             {COURSE_CODES.map((code) => (

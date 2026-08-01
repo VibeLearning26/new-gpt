@@ -12,6 +12,7 @@ import { MetricsAct } from "@/components/landing/MetricsAct";
 import { DeckAct } from "@/components/landing/DeckAct";
 import { OutcomeAct } from "@/components/landing/OutcomeAct";
 import { FinaleAct } from "@/components/landing/FinaleAct";
+import { ContributorsAct } from "@/components/landing/ContributorsAct";
 import { LandingFooter } from "@/components/landing/Footer";
 import { ActRail } from "@/components/landing/primitives";
 
@@ -81,6 +82,9 @@ export default function LandingPage() {
 
       {/* Chapter 9 — The finale */}
       <FinaleAct />
+
+      {/* End credits — the build crew */}
+      <ContributorsAct />
 
       <LandingFooter />
     </main>

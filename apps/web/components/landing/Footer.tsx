@@ -8,7 +8,6 @@ const FOOTER_LINKS = [
   { label: "How it works", href: "#pipeline-act" },
   { label: "Sources", href: "#citations-act" },
   { label: "Mark scheme", href: "#marks-act" },
-  { label: "Team", href: "/team" },
 ];
 
 export function LandingFooter() {
