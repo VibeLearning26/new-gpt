@@ -8,7 +8,6 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-
 # One real, tiny-prompt latency probe per enabled model (2026-07-31). Runtime
 # observations and persisted question logs replace these defaults as traffic
 # accumulates. Values are estimates, never a promise of response time.

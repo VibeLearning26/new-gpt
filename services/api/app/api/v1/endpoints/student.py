@@ -27,6 +27,11 @@ from app.core.config import get_settings
 from app.core.dependencies import DbSession, StudentUser
 from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.core.rate_limit import limiter
+from app.graphics.client import (
+    GraphicsContext,
+    GraphicsDrawingClient,
+    should_generate_drawing,
+)
 from app.models.academic import Module, StudentSubjectPermission, Subject
 from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.models.question import (
@@ -35,11 +40,6 @@ from app.models.question import (
     QuestionLog,
     QuestionSource,
     SavedAnswer,
-)
-from app.graphics.client import (
-    GraphicsContext,
-    GraphicsDrawingClient,
-    should_generate_drawing,
 )
 from app.rag.embedding import EmbeddingService
 from app.rag.generation import AnswerGenerationService
@@ -55,12 +55,12 @@ from app.schemas.question import (
     AnswerResponse,
     AskQuestionRequest,
     ChatSessionResponse,
+    DrawingAttachment,
     FeedbackRequest,
     HistoryItem,
     RenameSessionRequest,
     SessionMessage,
     SourceInfo,
-    DrawingAttachment,
     ValidationResult,
 )
 from app.storage import get_document_storage
