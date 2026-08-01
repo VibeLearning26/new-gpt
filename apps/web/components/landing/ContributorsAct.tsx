@@ -233,7 +233,7 @@ export function ContributorsAct() {
 
   return (
     <section
-      id="crew-act"
+      id="contributors-act"
       className="relative px-6 pb-24 md:px-8"
       style={{
         background:
