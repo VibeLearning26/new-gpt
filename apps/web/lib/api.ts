@@ -48,13 +48,16 @@ const USER_API_KEY = "vibegpt_user_api_key";
 
 export function getUserApiKey(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(USER_API_KEY);
+  const storage = window.localStorage;
+  return typeof storage?.getItem === "function" ? storage.getItem(USER_API_KEY) : null;
 }
 
 export function setUserApiKey(key: string | null): void {
   if (typeof window === "undefined") return;
-  if (key) localStorage.setItem(USER_API_KEY, key);
-  else localStorage.removeItem(USER_API_KEY);
+  const storage = window.localStorage;
+  if (typeof storage?.setItem !== "function") return;
+  if (key) storage.setItem(USER_API_KEY, key);
+  else storage.removeItem(USER_API_KEY);
 }
 
 /* ── Bring-your-own base URL ────────────────────────────────────
@@ -64,13 +67,16 @@ const USER_BASE_URL = "vibegpt_user_base_url";
 
 export function getUserBaseUrl(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(USER_BASE_URL);
+  const storage = window.localStorage;
+  return typeof storage?.getItem === "function" ? storage.getItem(USER_BASE_URL) : null;
 }
 
 export function setUserBaseUrl(url: string | null): void {
   if (typeof window === "undefined") return;
-  if (url) localStorage.setItem(USER_BASE_URL, url);
-  else localStorage.removeItem(USER_BASE_URL);
+  const storage = window.localStorage;
+  if (typeof storage?.setItem !== "function") return;
+  if (url) storage.setItem(USER_BASE_URL, url);
+  else storage.removeItem(USER_BASE_URL);
 }
 
 function handleUnauthorized(errorDetail: string): void {
@@ -217,6 +223,15 @@ export interface ApiSourceInfo {
   relevance_score: number | null;
 }
 
+export interface ApiDrawingAttachment {
+  drawing_id: string;
+  title: string;
+  svg: string;
+  spec: Record<string, unknown>;
+  warnings: string[];
+  engine: string;
+}
+
 export interface ApiAnswerResponse {
   id: string;
   status: string;
@@ -227,6 +242,7 @@ export interface ApiAnswerResponse {
   subject_id: string;
   subject_name: string;
   sources: ApiSourceInfo[];
+  drawing: ApiDrawingAttachment | null;
   model: string | null;
   processing_ms: number | null;
   session_id: string | null;
@@ -255,6 +271,7 @@ export interface ApiSessionMessage {
   subject_name: string | null;
   module_name: string | null;
   sources: ApiSourceInfo[];
+  drawing: ApiDrawingAttachment | null;
   feedback_rating: number | null;
   feedback_comment: string | null;
   created_at: string;
@@ -299,9 +316,11 @@ export async function askQuestion(params: {
   model?: string | null;
   session_id?: string | null;
   attachments?: ApiChatAttachment[];
+  signal?: AbortSignal;
 }): Promise<ApiAnswerResponse> {
   return fetchApi("/api/v1/student/answers", {
     method: "POST",
+    signal: params.signal,
     body: JSON.stringify({
       subject_id: params.subject_id ?? null,
       module_id: params.module_id ?? null,
@@ -696,6 +715,20 @@ export interface ApiModelsResponse {
   default: string;
 }
 
+export interface ApiModelPerformance {
+  model: string;
+  speed: "Fast" | "Balanced" | "Deliberate" | "Deep reasoning";
+  queue_label: string;
+  cycle_duration_ms: number;
+  estimated_response_ms: number;
+  active_requests: number;
+  model_active_requests: number;
+  recent_questions: number;
+  sample_count: number;
+  context_tokens: number;
+  source: "live" | "history" | "benchmark";
+}
+
 export interface ApiHistoryItem {
   id: string;
   subject_name: string;
@@ -712,6 +745,9 @@ export const studentApi = {
   listSubjects: (): Promise<ApiSubject[]> => fetchApi("/api/v1/student/subjects"),
 
   listModels: (): Promise<ApiModelsResponse> => fetchApi("/api/v1/student/models"),
+
+  getModelPerformance: (model: string): Promise<ApiModelPerformance> =>
+    fetchApi(`/api/v1/student/model-performance?model=${encodeURIComponent(model)}`),
 
   listModules: (subjectId: string): Promise<ApiModule[]> =>
     fetchApi(`/api/v1/student/subjects/${encodeURIComponent(subjectId)}/modules`),

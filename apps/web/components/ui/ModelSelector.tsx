@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown } from "reicon-react";
 import { CapabilityBadges } from "./CapabilityBadge";
 import {
-  MODEL_METADATA,
   formatContextWindow,
   getModelMeta,
   type CapabilityId,
@@ -35,15 +34,10 @@ export function ModelSelector({ models, value, onChange }: ModelSelectorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  /* Curated models: those with registry metadata, plus the current selection. */
-  const curated = useMemo(() => {
-    const known = models.filter((m) => MODEL_METADATA[m.id]);
-    if (value && !known.some((m) => m.id === value)) {
-      const current = models.find((m) => m.id === value);
-      if (current) return [current, ...known];
-    }
-    return known;
-  }, [models, value]);
+  // The API already returns the administrator-approved allowlist. Rendering
+  // every returned model ensures newly enabled ids are never hidden by stale
+  // frontend metadata.
+  const curated = useMemo(() => models, [models]);
 
   const selectedMeta = getModelMeta(value, models.find((m) => m.id === value)?.ownedBy);
 

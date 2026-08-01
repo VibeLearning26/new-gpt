@@ -117,7 +117,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
-      ROUTER_BASE_URL: http://router:20128/v1
+      GRAPHICS_SERVICE_URL: http://graphics:8010
       PYTHONPATH: /app
     ports:
       - "127.0.0.1:8000:8000"
@@ -129,6 +129,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+      graphics:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)"]
       interval: 15s
@@ -137,6 +139,23 @@ services:
       start_period: 90s
     restart: unless-stopped
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  # Deterministic engineering-graphics renderer. It receives only the
+  # subject-scoped excerpts selected by the authenticated VibeGPT API.
+  graphics:
+    <<: *hardened
+    build:
+      context: ../../GraphicsPythonVibeGPT/backend
+      dockerfile: Dockerfile
+    container_name: vibegpt-graphics
+    ports:
+      - "127.0.0.1:8010:8010"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/api/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   # ── Document Worker ────────────────────────────────────────
   worker:
@@ -149,7 +168,6 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vibegpt}:${POSTGRES_PASSWORD:-vibegpt_dev_password}@postgres:5432/${POSTGRES_DB:-vibegpt}
       OLLAMA_BASE_URL: http://ollama:11434
-      ROUTER_BASE_URL: http://router:20128/v1
       PYTHONPATH: /app
     volumes:
       - ../services/api:/app

@@ -256,8 +256,14 @@ function inferCapabilities(id: string, inputModalities: string[]): CapabilityId[
  * so the UI always renders something sensible without per-model UI logic.
  */
 export function getModelMeta(id: string, ownedBy?: string | null, inputModalities: string[] = ["text"]): ModelMeta {
-  const known = MODEL_METADATA[id];
-  if (known) return known;
+  const known = MODEL_METADATA[id] ?? MODEL_METADATA[`opencode-zen/${id}`];
+  if (known) {
+    const capabilities = [...known.capabilities];
+    if (inputModalities.includes("image") && !capabilities.includes("vision")) {
+      capabilities.push("vision");
+    }
+    return { ...known, id, capabilities };
+  }
   return {
     id,
     provider: ownedBy ?? (id.includes("/") ? id.split("/")[0] : "Unknown"),

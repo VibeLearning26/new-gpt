@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import {
   BookOpen,
   Check,
@@ -16,6 +17,10 @@ import {
   Key,
 } from "reicon-react";
 import { ModelSelector } from "@/components/ui/ModelSelector";
+import {
+  VisualAnswerMessage,
+  type VisualGenerationState,
+} from "@/components/visual-answer/VisualAnswerMessage";
 import { getUserApiKey, setUserApiKey, getUserBaseUrl, setUserBaseUrl } from "@/lib/api";
 
 // react-markdown + remark-gfm are heavy — load them only on the chat page,
@@ -37,6 +42,7 @@ import {
   studentApi,
   type ApiAnswerResponse,
   type ApiModel,
+  type ApiModelPerformance,
   type ApiModule,
   type ApiSessionMessage,
   type ApiChatAttachment,
@@ -52,6 +58,7 @@ interface RealSubject {
 
 interface ThreadItem {
   key: string;
+  requestId: string;
   logId: string | null;
   question: string;
   marks: number;
@@ -62,6 +69,20 @@ interface ThreadItem {
   feedbackRating: number | null;
   feedbackComment: string | null;
   attachmentNames: string[];
+  visualExpected: boolean;
+  visualState: VisualGenerationState;
+  visualRendered: boolean;
+}
+
+const VISUAL_INTENT = /\b(draw|drawing|projection|orthographic|isometric|diagram|chart|graph|plot|illustrat(?:e|ion)|front view|top view|side view|h\.?p\.?|v\.?p\.?)\b/i;
+const VISUAL_SUBJECT = /\b(graphics|engineering drawing|computer aided drawing|cad)\b/i;
+
+function expectsVisual(question: string, subject?: RealSubject): boolean {
+  return VISUAL_INTENT.test(question) && (!subject || VISUAL_SUBJECT.test(`${subject.code} ${subject.name}`) || /\b(draw|drawing|projection|diagram|chart|graph|plot)\b/i.test(question));
+}
+
+function isVisualItem(item: ThreadItem): boolean {
+  return item.visualExpected || Boolean(item.answer?.drawing);
 }
 
 const ACCEPTED_MIME_TYPES: Record<Exclude<ApiInputModality, "text">, string[]> = {
@@ -121,12 +142,23 @@ function apiAnswerToStudyAnswer(
     processingMs: api.processing_ms ?? 0,
     sources: mapSources(api.sources),
     model: api.model,
+    drawing: api.drawing
+      ? {
+          drawingId: api.drawing.drawing_id,
+          title: api.drawing.title,
+          svg: api.drawing.svg,
+          spec: api.drawing.spec,
+          warnings: api.drawing.warnings,
+        }
+      : null,
   };
 }
 
 function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
+  const visualExpected = Boolean(m.drawing);
   return {
     key: m.id,
+    requestId: m.id,
     logId: m.id,
     question: m.question,
     marks: m.marks,
@@ -136,6 +168,9 @@ function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
     feedbackRating: m.feedback_rating,
     feedbackComment: m.feedback_comment,
     attachmentNames: [],
+    visualExpected,
+    visualState: visualExpected ? "validating_visual" : "completed",
+    visualRendered: false,
     answer: {
       question: m.question,
       marks: m.marks,
@@ -146,6 +181,15 @@ function messageToThreadItem(m: ApiSessionMessage): ThreadItem {
       processingMs: m.processing_ms ?? 0,
       sources: mapSources(m.sources),
       model: m.model_name,
+      drawing: m.drawing
+        ? {
+            drawingId: m.drawing.drawing_id,
+            title: m.drawing.title,
+            svg: m.drawing.svg,
+            spec: m.drawing.spec,
+            warnings: m.drawing.warnings,
+          }
+        : null,
     },
   };
 }
@@ -234,6 +278,12 @@ function ChatPage({
   const [modules, setModules] = useState<ApiModule[]>([]);
   const [models, setModels] = useState<ApiModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [modelPerformance, setModelPerformance] = useState<
+    Record<string, ApiModelPerformance>
+  >({});
+  const [modelCatalogStatus, setModelCatalogStatus] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
   const [keyOpen, setKeyOpen] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(() => getUserApiKey() ?? "");
   const [savedKey, setSavedKey] = useState<string | null>(() => getUserApiKey());
@@ -243,6 +293,7 @@ function ChatPage({
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const requestControllers = useRef(new Map<string, AbortController>());
 
   const activeSessionId = sessionParam ?? createdSessionId;
   const selectedSubjectId = chosenSubjectId ?? subjectParam ?? "";
@@ -255,6 +306,14 @@ function ChatPage({
   const acceptedMimeTypes = mediaModalities.flatMap(
     (modality) => ACCEPTED_MIME_TYPES[modality],
   );
+
+  useEffect(() => {
+    const controllers = requestControllers.current;
+    return () => {
+      controllers.forEach((controller) => controller.abort());
+      controllers.clear();
+    };
+  }, []);
 
   const refreshSessions = useCallback(() => {
     window.dispatchEvent(new Event("vibegpt:sessions-changed"));
@@ -309,10 +368,50 @@ function ChatPage({
       .then((res) => {
         setModels(res.models);
         setModelProvider(res.provider);
-        setSelectedModel((current) => current || res.default);
+        setSelectedModel((current) =>
+          current && res.models.some((model) => model.id === current)
+            ? current
+            : res.default || res.models[0]?.id || "",
+        );
+        setModelCatalogStatus("ready");
       })
-      .catch(() => setModels([]));
+      .catch(() => {
+        setModels([]);
+        setModelCatalogStatus("error");
+      });
   }, []);
+
+  // Refresh while an answer is running so the motion responds to the current
+  // generation queue and the last minute of site traffic, not only a static
+  // model benchmark. The pending message keeps its own selected model.
+  useEffect(() => {
+    if (!hasRealSession() || !selectedModel) return;
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const refresh = () => {
+      studentApi
+        .getModelPerformance(selectedModel)
+        .then((performance) => {
+          if (active) {
+            setModelPerformance((current) => ({
+              ...current,
+              [selectedModel]: performance,
+            }));
+          }
+        })
+        .catch(() => {
+          // A missing measurement must never prevent a student from asking.
+        });
+    };
+
+    refresh();
+    if (loading) timer = setInterval(refresh, 1800);
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [selectedModel, loading]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -339,8 +438,12 @@ function ChatPage({
     setRunError(null);
 
     const itemKey = `local-${crypto.randomUUID()}`;
+    const requestId = crypto.randomUUID();
+    const currentSubject = realSubjects.find((subject) => subject.id === selectedSubjectId);
+    const visualExpected = expectsVisual(q, currentSubject);
     const pendingItem: ThreadItem = {
       key: itemKey,
+      requestId,
       logId: null,
       question: q,
       marks: m,
@@ -351,6 +454,9 @@ function ChatPage({
       feedbackRating: null,
       feedbackComment: null,
       attachmentNames: files.map((file) => file.name),
+      visualExpected,
+      visualState: visualExpected ? "submitting" : "idle",
+      visualRendered: false,
     };
     setThread((prev) => [...prev, pendingItem]);
 
@@ -359,8 +465,13 @@ function ChatPage({
 
     if (realSession) {
       const real = realSubjects.find((subject) => subject.id === selectedSubjectId);
+      const controller = new AbortController();
+      requestControllers.current.set(requestId, controller);
       try {
+        if (visualExpected) patchItem({ visualState: "analysing" });
         const apiAttachments = await Promise.all(files.map(fileToAttachment));
+        if (visualExpected) patchItem({ visualState: "preparing_data" });
+        if (visualExpected) patchItem({ visualState: "generating_visual" });
         const api = await askQuestion({
           subject_id: real?.id ?? null,
           module_id: real ? activeModule?.id ?? null : null,
@@ -369,6 +480,7 @@ function ChatPage({
           model: selectedModel || null,
           session_id: activeSessionId,
           attachments: apiAttachments,
+          signal: controller.signal,
         });
         const resolved = realSubjects.find((subject) => subject.id === api.subject_id);
         patchItem({
@@ -380,6 +492,11 @@ function ChatPage({
             real ? activeModule?.name ?? "Whole subject" : "Auto-detected",
           ),
           status: "done",
+          visualExpected: visualExpected || Boolean(api.drawing),
+          visualState: api.drawing ? "validating_visual" : visualExpected ? "failed" : "completed",
+          error: visualExpected && !api.drawing
+            ? "The drawing service could not construct a validated visual for this question."
+            : null,
         });
         if (!activeSessionId && api.session_id) {
           setCreatedSessionId(api.session_id);
@@ -388,16 +505,21 @@ function ChatPage({
         } else {
           refreshSessions();
         }
-        setLoading(false);
         return;
       } catch (error) {
+        const cancelled = controller.signal.aborted;
         patchItem({
           status: "error",
+          visualState: cancelled ? "cancelled" : "failed",
           error:
-            error instanceof Error ? error.message : "The grounded answer service is unavailable.",
+            cancelled
+              ? "The drawing request was cancelled."
+              : error instanceof Error ? error.message : "The grounded answer service is unavailable.",
         });
-        setLoading(false);
         return;
+      } finally {
+        requestControllers.current.delete(requestId);
+        setLoading(false);
       }
     }
 
@@ -406,8 +528,15 @@ function ChatPage({
       ? generateMockAnswer(q, m, route.subject.name, route.module.name)
       : generateMockAnswer(q, m, "General", "General");
     await new Promise((r) => setTimeout(r, 1100));
-    patchItem({ answer: result, status: "done" });
+    patchItem({ answer: result, status: "done", visualState: "completed" });
     setLoading(false);
+  };
+
+  const cancelVisualRequest = (item: ThreadItem) => {
+    requestControllers.current.get(item.requestId)?.abort();
+    setThread((current) => current.map((entry) => entry.key === item.key
+      ? { ...entry, status: "error", visualState: "cancelled", error: "The drawing request was cancelled." }
+      : entry));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -602,7 +731,11 @@ function ChatPage({
           )}
 
           {/* Thread */}
-          {thread.map((item) => (
+          {thread.map((item) => {
+            const visualMode = isVisualItem(item);
+            const performance = item.model ? modelPerformance[item.model] : null;
+            const followupsReady = !visualMode || item.visualRendered;
+            return (
             <div key={item.key} className="mb-6 fade-up">
               {/* User bubble */}
               <div className="flex justify-end mb-4">
@@ -627,9 +760,40 @@ function ChatPage({
               </div>
 
               {/* Assistant */}
-              {item.status === "pending" && <CaterpillarReasoning isProcessing={true} />}
+              {visualMode && (
+                <VisualAnswerMessage
+                  requestId={item.requestId}
+                  state={item.visualState}
+                  drawing={item.answer?.drawing ?? null}
+                  description={item.answer?.body ?? null}
+                  error={item.error}
+                  cycleDurationMs={performance?.cycle_duration_ms}
+                  isSaved={Boolean(item.logId && savedIds.has(item.logId))}
+                  onCancel={item.status === "pending" ? () => cancelVisualRequest(item) : undefined}
+                  onRetry={item.status !== "pending" ? () => run(item.question, item.marks) : undefined}
+                  onSave={item.logId ? () => toggleSave(item) : undefined}
+                  onVisualRendered={() => {
+                    if (item.visualRendered) return;
+                    setThread((current) => current.map((entry) => entry.key === item.key
+                      ? { ...entry, visualRendered: true, visualState: "completed" }
+                      : entry));
+                  }}
+                />
+              )}
 
-              {item.status === "error" && (
+              {item.status === "pending" && !visualMode && (
+                <CaterpillarReasoning
+                  isProcessing={true}
+                  cycleDuration={performance?.cycle_duration_ms ?? 1300}
+                  performanceLabel={
+                    performance
+                      ? `${performance.speed} · ${performance.queue_label}`
+                      : "Measuring live speed"
+                  }
+                />
+              )}
+
+              {item.status === "error" && !visualMode && (
                 <div className="panel p-4 border border-err/40" role="alert">
                   <p className="text-sm font-semibold text-err">Couldn&apos;t answer that</p>
                   <p className="text-xs text-muted mt-1">{item.error}</p>
@@ -638,25 +802,29 @@ function ChatPage({
 
               {item.status === "done" && item.answer && (
                 <div>
-                  <div className="flex items-center gap-2.5 mb-3">
-                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#e50914] to-[#ff2a2a] flex items-center justify-center text-xs font-extrabold text-white">
-                      V
-                    </div>
+                  {!visualMode && <div className="flex items-center gap-2.5 mb-3">
+                    <Image
+                      src="/logo.png"
+                      alt="VibeGPT"
+                      width={28}
+                      height={28}
+                      className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/10"
+                    />
                     <span className="text-sm font-semibold">VibeGPT</span>
                     <span className="text-[11px] text-faint">
                       {item.answer.wordCount} words · {item.answer.processingMs}ms
                       {item.answer.sources.length > 0 &&
                         ` · ${item.answer.sources.length} sources`}
                     </span>
-                  </div>
+                  </div>}
 
-                  <div className="answer-card">
+                  {!visualMode && <div className="answer-card">
                     <Markdown text={item.answer.body} />
-                  </div>
+                  </div>}
 
-                  <div className="flex flex-wrap items-center gap-2 mt-3">
-                    <CopyButton text={item.answer.body} onCopy={copy} />
-                    {item.logId && (
+                  {followupsReady && <div className="flex flex-wrap items-center gap-2 mt-3 visual-answer__followups">
+                    {!visualMode && <CopyButton text={item.answer.body} onCopy={copy} />}
+                    {item.logId && !visualMode && (
                       <button
                         onClick={() => toggleSave(item)}
                         className="btn-ghost inline-flex items-center gap-1.5"
@@ -704,9 +872,9 @@ function ChatPage({
                         <DocumentText size={14} /> Sources ({item.answer.sources.length})
                       </button>
                     )}
-                  </div>
+                  </div>}
 
-                  {item.logId && feedbackOpen.has(item.key) && (
+                  {followupsReady && item.logId && feedbackOpen.has(item.key) && (
                     <FeedbackForm
                       logId={item.logId}
                       initialRating={item.feedbackRating ?? 0}
@@ -725,7 +893,7 @@ function ChatPage({
                     />
                   )}
 
-                  {openSources.has(item.key) && (
+                  {followupsReady && openSources.has(item.key) && (
                     <div className="mt-4 space-y-2 fade-in">
                       <p className="text-[11px] font-semibold uppercase tracking-wider text-faint">
                         Source references
@@ -745,7 +913,7 @@ function ChatPage({
                 </div>
               )}
             </div>
-          ))}
+          )})}
         </div>
       </div>
 
@@ -970,7 +1138,7 @@ function ChatPage({
                     </button>
                   </>
                 )}
-                {models.length > 0 && (
+                {models.length > 0 ? (
                   <ModelSelector
                     value={selectedModel}
                     onChange={changeModel}
@@ -980,6 +1148,25 @@ function ChatPage({
                       inputModalities: m.input_modalities as string[],
                     }))}
                   />
+                ) : (
+                  <div className="model-selector">
+                    <button
+                      type="button"
+                      className="model-trigger"
+                      disabled
+                      title={
+                        modelCatalogStatus === "loading"
+                          ? "Loading available models"
+                          : "The model service is currently unavailable"
+                      }
+                    >
+                      <span className="model-trigger-name truncate">
+                        {modelCatalogStatus === "loading"
+                          ? "Loading models…"
+                          : "Models unavailable"}
+                      </span>
+                    </button>
+                  </div>
                 )}
                 <button
                   type="button"

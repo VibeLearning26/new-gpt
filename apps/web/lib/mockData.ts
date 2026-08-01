@@ -36,6 +36,13 @@ export interface StudyAnswer {
   processingMs: number;
   sources: SourceRef[];
   model?: string | null;
+  drawing?: {
+    drawingId: string;
+    title: string;
+    svg: string;
+    spec: Record<string, unknown>;
+    warnings: string[];
+  } | null;
 }
 
 export interface Conversation {

@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # an OpenAI-compatible gateway (9Router) with dynamic model switching.
     LLM_PROVIDER: Literal["ollama", "router"] = "ollama"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    GRAPHICS_SERVICE_URL: str = "http://localhost:8010"
+    GRAPHICS_REQUEST_TIMEOUT_SECONDS: float = 45.0
     OLLAMA_MODEL: str = "llama3.2:3b"
     # CPU inference is slow (~5-10 tok/s); a grounded answer with a long
     # RAG prompt can need several minutes end to end.

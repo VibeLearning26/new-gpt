@@ -44,6 +44,7 @@ export interface CaterpillarReasoningIndicatorProps {
   status?: string;
   blockCount?: number;
   cycleDuration?: number;
+  performanceLabel?: string;
   amplitude?: number;
   size?: number;
   className?: string;
@@ -57,8 +58,9 @@ export function CaterpillarReasoningIndicator({
   status,
   blockCount = 6,
   cycleDuration = 1300,
-  amplitude = 14,
-  size = 20,
+  performanceLabel,
+  amplitude = 4,
+  size = 8,
   className,
   style,
 }: CaterpillarReasoningIndicatorProps) {
@@ -191,7 +193,7 @@ export function CaterpillarReasoningIndicator({
         display: "flex",
         flexDirection: "column",
         alignItems: "flex-start",
-        gap: 16,
+        gap: 6,
         opacity: exiting ? 0 : 1,
         transform: exiting ? "scale(0.95)" : "scale(1)",
         transition: `opacity ${EXIT_MS}ms ease, transform ${EXIT_MS}ms ease`,
@@ -202,9 +204,28 @@ export function CaterpillarReasoningIndicator({
       aria-label={shown || "Processing"}
     >
       {/* status text — on top */}
-      {shown && (
-        <div style={{ fontSize: 12, color: "#a8a8a8", fontWeight: 500 }}>
-          {shown}
+      {(shown || performanceLabel) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+          {shown && (
+            <span style={{ fontSize: 12, color: "#a8a8a8", fontWeight: 500 }}>
+              {shown}
+            </span>
+          )}
+          {performanceLabel && !reduced && (
+            <span
+              style={{
+                fontSize: 10,
+                lineHeight: 1,
+                color: "#d7d7d7",
+                border: "1px solid rgba(255,255,255,0.12)",
+                borderRadius: 999,
+                padding: "3px 6px",
+                background: "rgba(255,255,255,0.04)",
+              }}
+            >
+              {performanceLabel}
+            </span>
+          )}
         </div>
       )}
 

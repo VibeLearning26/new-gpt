@@ -1083,6 +1083,309 @@ body {
   border-color: rgba(229, 9, 20, 0.4);
   background: rgba(229, 9, 20, 0.06);
 }
+
+.drawing-result {
+  overflow: hidden;
+  border: 1px solid rgba(255, 42, 42, 0.24);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 42, 42, 0.08), transparent 34%),
+    #101010;
+}
+
+.drawing-result__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.drawing-result__header h3 {
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.drawing-result__eyebrow {
+  color: #ff3434;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.drawing-result__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.drawing-result__canvas {
+  padding: 14px;
+  background: #deddd6;
+}
+
+.drawing-result__canvas img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(70vh, 720px);
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
+.drawing-result__note {
+  padding: 12px 18px 15px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* Visual-first engineering answer. The same card owns generation, reveal,
+   description, and actions so the chat never jumps between placeholders. */
+.visual-answer {
+  --drawing-cycle: 1300ms;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 42, 42, 0.28);
+  border-radius: 18px;
+  background: #101010;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22), 0 0 24px rgba(229, 9, 20, 0.055);
+  isolation: isolate;
+  transition: border-color 320ms ease, box-shadow 320ms ease;
+}
+
+.visual-answer--complete {
+  animation: visualAnswerComplete 680ms cubic-bezier(0.16, 1, 0.3, 1) 1;
+}
+
+.visual-answer--failed { border-color: rgba(255, 70, 70, 0.24); }
+
+.visual-answer__header {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.visual-answer__status-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  color: #ff3838;
+  border: 1px solid rgba(255, 42, 42, 0.38);
+  border-radius: 9px;
+  background: rgba(229, 9, 20, 0.1);
+}
+.visual-answer__status-icon > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #ff2833;
+  box-shadow: 0 0 12px rgba(255, 16, 27, 0.72);
+  animation: drawingStatusPulse var(--drawing-cycle-medium) ease-in-out infinite;
+}
+.visual-answer__eyebrow {
+  color: #f2f2f2;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.visual-answer__phase {
+  margin-top: 2px;
+  color: #929292;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.visual-answer__cancel {
+  margin-left: auto;
+  padding: 7px 10px;
+  color: #aaa;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+.visual-answer__cancel:hover,
+.visual-answer__cancel:focus-visible {
+  color: #fff;
+  border-color: rgba(255, 42, 42, 0.45);
+  outline: none;
+}
+
+.visual-answer__stage {
+  position: relative;
+  min-height: 360px;
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  background: #0b0b0b;
+}
+.visual-answer__placeholder,
+.visual-answer__image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.visual-answer__placeholder {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 360ms ease, transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.visual-answer__placeholder.is-hidden {
+  opacity: 0;
+  transform: scale(0.992);
+  pointer-events: none;
+}
+.visual-answer__image {
+  display: block;
+  padding: 14px;
+  object-fit: contain;
+  opacity: 0;
+  transform: scale(0.985);
+  background: #deddd6;
+  transition: opacity 380ms ease, transform 380ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.visual-answer__image.is-visible { opacity: 1; transform: scale(1); }
+.visual-answer__reveal-light {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.18) 48%, transparent 66%);
+  transform: translateX(-115%);
+  animation: drawingRevealSweep 900ms ease-out 1 100ms;
+}
+
+.drawing-dot-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 80%, rgba(229, 9, 20, 0.10), transparent 34%),
+    radial-gradient(circle at 82% 18%, rgba(255, 255, 255, 0.035), transparent 32%),
+    #0b0b0b;
+}
+.drawing-dot-field__canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.drawing-dot-field__vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), transparent 28%, transparent 72%, rgba(0,0,0,0.20)),
+    radial-gradient(circle at center, transparent 42%, rgba(0,0,0,0.38));
+}
+
+.visual-answer__progress { height: 2px; overflow: hidden; background: rgba(255,255,255,0.035); }
+.visual-answer__progress span {
+  display: block;
+  width: 34%;
+  height: 100%;
+  background: #e50914;
+  box-shadow: 0 0 10px rgba(229, 9, 20, 0.65);
+  animation: drawingProgress var(--drawing-cycle-medium) ease-in-out infinite;
+}
+.visual-answer__description {
+  padding: 15px 17px 13px;
+  color: #d7d7d7;
+  border-top: 1px solid rgba(255,255,255,0.065);
+  font-size: 13px;
+  line-height: 1.65;
+  animation: visualSectionIn 320ms ease both 160ms;
+}
+.visual-answer__description details { margin-top: 10px; }
+.visual-answer__description summary {
+  width: max-content;
+  color: #ff4149;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.visual-answer__details { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.07); }
+.visual-answer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 0 16px 15px;
+  animation: visualSectionIn 320ms ease both 260ms;
+}
+.visual-answer__actions .btn-ghost { display: inline-flex; align-items: center; gap: 6px; }
+.visual-answer__note { padding: 0 17px 14px; color: #7f7f7f; font-size: 10px; line-height: 1.5; }
+.visual-answer__followups { animation: visualSectionIn 260ms ease both; }
+.visual-answer__error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 30px;
+  color: #aaa;
+  text-align: center;
+}
+.visual-answer__error svg { position: static; width: 24px; height: 24px; color: #ff343d; }
+.visual-answer__error strong { color: #eee; font-size: 14px; }
+.visual-answer__error p { max-width: 430px; font-size: 12px; line-height: 1.55; }
+.visual-answer__error .btn-ghost { display: inline-flex; align-items: center; gap: 6px; margin-top: 5px; }
+
+@keyframes drawingProgress { 0% { transform: translateX(-110%); } 55% { transform: translateX(195%); } 100% { transform: translateX(330%); } }
+@keyframes drawingStatusPulse { 0%, 100% { opacity: 0.45; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+@keyframes drawingRevealSweep { to { transform: translateX(115%); } }
+@keyframes visualSectionIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes visualAnswerComplete { 0% { border-color: rgba(255,42,42,0.28); } 48% { border-color: rgba(255,42,42,0.75); box-shadow: 0 0 28px rgba(229,9,20,0.18); } 100% { border-color: rgba(255,42,42,0.28); } }
+
+@media (max-width: 640px) {
+  .visual-answer { border-radius: 14px; }
+  .visual-answer__header { align-items: flex-start; padding: 13px; }
+  .visual-answer__stage { min-height: 260px; aspect-ratio: 4 / 3; }
+  .visual-answer__image { padding: 8px; }
+  .visual-answer__description { padding-inline: 13px; }
+  .visual-answer__actions { padding-inline: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .visual-answer,
+  .visual-answer *,
+  .visual-answer *::before,
+  .visual-answer *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .drawing-dot-field__vignette { opacity: 0.72; }
+}
+
+@media (max-width: 640px) {
+  .drawing-result__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .drawing-result__actions {
+    justify-content: flex-start;
+  }
+}
+.model-trigger:disabled {
+  cursor: wait;
+  color: var(--color-muted);
+  opacity: 0.72;
+}
 .model-trigger-name {
   max-width: 170px;
 }

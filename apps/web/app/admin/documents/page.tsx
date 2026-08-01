@@ -483,6 +483,16 @@ function SubjectUploadCard({ subject, demo }: { subject: ApiSubject; demo: boole
                     {u.error ? ` · ${u.error}` : ""}
                   </p>
                 </div>
+                {u.status === "done" && u.documentId && (
+                  <button
+                    type="button"
+                    onClick={() => publish(u.documentId!)}
+                    className="btn-ghost text-xs"
+                    title="Make this indexed document available to students"
+                  >
+                    Publish now
+                  </button>
+                )}
                 {u.status === "done" ? (
                   <span className="badge badge-success">✓ Indexed</span>
                 ) : u.status === "duplicate" ? (

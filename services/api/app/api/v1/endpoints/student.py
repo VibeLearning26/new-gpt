@@ -14,6 +14,7 @@ GET  /api/v1/student/profile
 """
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from uuid import UUID
 
@@ -35,10 +36,16 @@ from app.models.question import (
     QuestionSource,
     SavedAnswer,
 )
+from app.graphics.client import (
+    GraphicsContext,
+    GraphicsDrawingClient,
+    should_generate_drawing,
+)
 from app.rag.embedding import EmbeddingService
 from app.rag.generation import AnswerGenerationService
 from app.rag.llm import filter_gateway_models, get_model_catalog
 from app.rag.modalities import model_input_modalities, validate_attachments
+from app.rag.model_performance import performance_payload, tracker
 from app.rag.ollama_client import OllamaError
 from app.rag.router_client import RouterClient
 from app.schemas.academic import ModuleResponse, SubjectResponse
@@ -53,6 +60,7 @@ from app.schemas.question import (
     RenameSessionRequest,
     SessionMessage,
     SourceInfo,
+    DrawingAttachment,
     ValidationResult,
 )
 from app.storage import get_document_storage
@@ -316,6 +324,47 @@ async def list_available_models(current_user: StudentUser):
     }
 
 
+@router.get("/model-performance")
+async def get_model_performance(
+    current_user: StudentUser,
+    db: DbSession,
+    model: str = Query(min_length=1, max_length=100),
+):
+    """Live animation-speed estimate from model latency, queue, and traffic."""
+    if not await get_model_catalog().is_available(model):
+        raise ValidationError(f"Model '{model}' is not available")
+
+    recent_logs = (
+        select(QuestionLog.processing_time_ms)
+        .where(
+            QuestionLog.model_name == model,
+            QuestionLog.processing_time_ms.is_not(None),
+        )
+        .order_by(QuestionLog.created_at.desc())
+        .limit(30)
+        .subquery()
+    )
+    average_row = await db.execute(
+        select(func.avg(recent_logs.c.processing_time_ms), func.count())
+    )
+    database_average, database_samples = average_row.one()
+    traffic = await db.scalar(
+        select(func.count(QuestionLog.id)).where(
+            QuestionLog.created_at >= datetime.now(UTC) - timedelta(minutes=1)
+        )
+    )
+    total_active, model_active, runtime_average = await tracker.live_snapshot(model)
+    return performance_payload(
+        model=model,
+        total_active=total_active,
+        model_active=model_active,
+        recent_questions=int(traffic or 0),
+        runtime_average_ms=runtime_average,
+        database_average_ms=round(float(database_average)) if database_average else None,
+        database_samples=int(database_samples or 0),
+    )
+
+
 @router.post("/answers", response_model=AnswerResponse)
 @limiter.limit("20/minute")
 async def ask_question(
@@ -403,13 +452,35 @@ async def ask_question(
             history.append({"role": "assistant", "content": log.answer or ""})
 
     service = AnswerGenerationService(db, api_key=request.headers.get("X-User-Api-Key"), base_url=request.headers.get("X-User-Base-Url"))
-    result = await service.generate(
-        question=body.question,
-        subject_id=body.subject_id,
-        marks=body.marks,
-        module_id=body.module_id,
-        model=body.model,
-    )
+    performance_ticket = await tracker.begin(effective_model)
+    try:
+        result = await service.generate(
+            question=body.question,
+            subject_id=subject_id,
+            marks=body.marks,
+            module_id=body.module_id,
+            model=body.model,
+            history=history,
+            attachments=attachments,
+        )
+
+        drawing_result = None
+        if should_generate_drawing(subject.name, subject.code, body.question):
+            drawing_result = await GraphicsDrawingClient().generate(
+                body.question,
+                [
+                    GraphicsContext(
+                        document_id=str(source.document_id),
+                        document_name=source.document_name,
+                        text=source.content,
+                        score=source.relevance_score,
+                        page=source.page_number,
+                    )
+                    for source in result.sources
+                ],
+            )
+    finally:
+        await tracker.finish(performance_ticket)
 
     question_log = QuestionLog(
         user_id=current_user.id,
@@ -429,6 +500,7 @@ async def ask_question(
         completion_tokens=result.completion_tokens,
         total_tokens=result.total_tokens,
         validation_result=result.validation or None,
+        drawing_result=drawing_result,
     )
     session.model_name = result.model_name
     db.add(question_log)
@@ -482,6 +554,9 @@ async def ask_question(
             citations_valid=result.validation.get("citations_valid", True),
             details=result.validation or None,
         ),
+        drawing=DrawingAttachment.model_validate(drawing_result)
+        if drawing_result
+        else None,
         session_id=session.id,
         created_at=question_log.created_at,
     )
@@ -605,6 +680,9 @@ async def get_session_messages(
                 )
                 for src in log.sources
             ],
+            drawing=DrawingAttachment.model_validate(log.drawing_result)
+            if log.drawing_result
+            else None,
             created_at=log.created_at,
         )
         for log in logs

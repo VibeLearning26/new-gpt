@@ -95,6 +95,7 @@ class DocumentWorker:
             # Windows doesn't support add_signal_handler
             pass
 
+        await self._recover_interrupted_jobs()
         await self._run_loop()
 
     def _shutdown(self):
@@ -150,122 +151,150 @@ class DocumentWorker:
                 await session.refresh(job)
             return job
 
-    async def _process_job(self, job: DocumentProcessingJob) -> None:
-        """Process a single document job using the new processing pipeline."""
-        logger.info(f"Processing job {job.id} for document {job.document_id}")
-
+    async def _recover_interrupted_jobs(self) -> None:
+        """Return jobs left RUNNING by a stopped/crashed worker to the queue."""
         async with async_session_factory() as session, session.begin():
-            # Reload job with document
             result = await session.execute(
                 select(DocumentProcessingJob, Document)
                 .join(Document, Document.id == DocumentProcessingJob.document_id)
-                .where(DocumentProcessingJob.id == job.id)
+                .where(DocumentProcessingJob.status == ProcessingJobStatus.RUNNING)
+                .with_for_update(skip_locked=True)
             )
-            row = result.one_or_none()
-            if not row:
-                logger.error(f"Job {job.id} not found")
-                return
+            rows = result.all()
+            for job, doc in rows:
+                job.status = ProcessingJobStatus.PENDING
+                job.error_message = "Recovered after an interrupted worker run"
+                doc.status = DocumentStatus.UPLOADED
+            if rows:
+                logger.warning("Recovered %d interrupted document job(s)", len(rows))
 
-            job, doc = row
+    async def _process_job(self, job: DocumentProcessingJob) -> None:
+        """Process a single document job using the new processing pipeline."""
+        logger.info(f"Processing job {job.id} for document {job.document_id}")
+        job_id = job.id
+        document_id = job.document_id
 
-            try:
-                # Update job status
-                job.status = ProcessingJobStatus.RUNNING
-                job.started_at = datetime.now(UTC)
-                await session.flush()
-
-                # Read file
-                file_bytes = await storage.get(doc.storage_path)
-
-                # Keep the admin's semantic category, but parse using the
-                # verified MIME type so teacher-answer and paper categories work.
+        try:
+            # Keep database work short. Parsing and the first model load can take
+            # minutes, so no connection or transaction may remain checked out.
+            async with async_session_factory() as session, session.begin():
+                result = await session.execute(
+                    select(DocumentProcessingJob, Document)
+                    .join(Document, Document.id == DocumentProcessingJob.document_id)
+                    .where(DocumentProcessingJob.id == job_id)
+                )
+                row = result.one_or_none()
+                if not row:
+                    logger.error("Job %s not found", job_id)
+                    return
+                db_job, doc = row
+                db_job.status = ProcessingJobStatus.RUNNING
+                db_job.started_at = datetime.now(UTC)
                 if doc.source_type == SourceType.OTHER:
                     doc.source_type = infer_source_type_from_filename(doc.original_filename)
-                    await session.flush()
+                storage_path = doc.storage_path
+                mime_type = doc.mime_type
 
-                # Parse document
-                elements = await asyncio.to_thread(parse_document, file_bytes, doc.mime_type)
-                if not elements:
-                    raise ValueError("No text content extracted from document")
+            file_bytes = await storage.get(storage_path)
+            elements = await asyncio.to_thread(parse_document, file_bytes, mime_type)
+            if not elements:
+                raise ValueError("No text content extracted from document")
 
-                # Chunk elements
-                chunks = chunk_elements(elements, max_tokens=500, overlap=50)
-                if not chunks:
-                    raise ValueError("No chunks created from document")
+            chunks = chunk_elements(elements, max_tokens=500, overlap=50)
+            if not chunks:
+                raise ValueError("No chunks created from document")
 
-                # Generate embeddings
-                embedding_service = EmbeddingService()
-                chunk_texts = [c.content for c in chunks]
-                embeddings = await asyncio.to_thread(
-                    embedding_service.embed_batch, chunk_texts
+            embedding_service = EmbeddingService()
+            embeddings = await asyncio.to_thread(
+                embedding_service.embed_batch, [chunk.content for chunk in chunks]
+            )
+            if len(embeddings) != len(chunks):
+                raise ValueError("Embedding count does not match chunk count")
+
+            async with async_session_factory() as session, session.begin():
+                result = await session.execute(
+                    select(DocumentProcessingJob, Document)
+                    .join(Document, Document.id == DocumentProcessingJob.document_id)
+                    .where(DocumentProcessingJob.id == job_id)
+                    .with_for_update()
                 )
-                if len(embeddings) != len(chunks):
-                    raise ValueError("Embedding count does not match chunk count")
-
-                # Retries replace any partial prior output.
+                row = result.one_or_none()
+                if not row:
+                    raise ValueError(f"Job {job_id} disappeared before results were saved")
+                db_job, doc = row
                 await session.execute(
-                    delete(DocumentChunk).where(DocumentChunk.document_id == doc.id)
+                    delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
                 )
-
-                # Save chunks to database
-                for _i, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=False)):
-                    db_chunk = DocumentChunk(
-                        document_id=doc.id,
-                        content=chunk.content,
-                        page_number=chunk.page_number,
-                        slide_number=chunk.slide_number,
-                        sheet_name=chunk.sheet_name,
-                        heading=chunk.heading,
-                        chunk_index=chunk.chunk_index,
-                        token_count=chunk.token_count,
-                        metadata_json=chunk.metadata,
-                        embedding=embedding,
-                        is_active=True,
+                for chunk, embedding in zip(chunks, embeddings, strict=False):
+                    session.add(
+                        DocumentChunk(
+                            document_id=document_id,
+                            content=chunk.content,
+                            page_number=chunk.page_number,
+                            slide_number=chunk.slide_number,
+                            sheet_name=chunk.sheet_name,
+                            heading=chunk.heading,
+                            chunk_index=chunk.chunk_index,
+                            token_count=chunk.token_count,
+                            metadata_json=chunk.metadata,
+                            embedding=embedding,
+                            is_active=True,
+                        )
                     )
-                    session.add(db_chunk)
-
-                # Update document
                 doc.total_chunks = len(chunks)
                 doc.status = DocumentStatus.READY
                 doc.processing_error = None
+                db_job.status = ProcessingJobStatus.COMPLETED
+                db_job.completed_at = datetime.now(UTC)
+                db_job.chunks_created = len(chunks)
+                db_job.error_message = None
+                db_job.error_details = None
 
-                # Update job
-                job.status = ProcessingJobStatus.COMPLETED
-                job.completed_at = datetime.now(UTC)
-                job.chunks_created = len(chunks)
+            logger.info("Job %s completed: %d chunks created", job_id, len(chunks))
+        except Exception as exc:
+            logger.exception("Error processing job %s", job_id)
+            await self._record_failure(job_id, str(exc))
 
-                await session.flush()
-                logger.info(f"Job {job.id} completed: {len(chunks)} chunks created")
-
-            except Exception as e:
-                logger.exception(f"Error processing job {job.id}")
-                await self._handle_failure(session, job, doc, str(e))
-
-    async def _handle_failure(
-        self, session, job: DocumentProcessingJob, doc: Document, error: str
-    ) -> None:
-        """Handle processing failure with retry logic."""
-        max_retries = self.max_retries
-
-        if job.retry_count < max_retries:
-            # Schedule retry
-            job.retry_count += 1
-            job.status = ProcessingJobStatus.PENDING
-            job.error_message = error
-            job.error_details = {"error": error, "retry": job.retry_count}
-            doc.status = DocumentStatus.UPLOADED
-            logger.warning(f"Job {job.id} failed (retry {job.retry_count}/{max_retries}): {error}")
-        else:
-            # Max retries exceeded
-            job.status = ProcessingJobStatus.FAILED
-            job.error_message = error
-            job.error_details = {"error": error, "max_retries_exceeded": True}
-            doc.status = DocumentStatus.FAILED
-            doc.processing_error = error
-            logger.error(f"Job {job.id} failed permanently after {max_retries} retries: {error}")
-
-        job.completed_at = datetime.now(UTC)
-        await session.flush()
+    async def _record_failure(self, job_id, error: str) -> None:
+        """Record failure in a fresh transaction, never the failed transaction."""
+        async with async_session_factory() as session, session.begin():
+            result = await session.execute(
+                select(DocumentProcessingJob, Document)
+                .join(Document, Document.id == DocumentProcessingJob.document_id)
+                .where(DocumentProcessingJob.id == job_id)
+                .with_for_update()
+            )
+            row = result.one_or_none()
+            if not row:
+                logger.error("Cannot record failure: job %s not found", job_id)
+                return
+            job, doc = row
+            if job.retry_count < self.max_retries:
+                job.retry_count += 1
+                job.status = ProcessingJobStatus.PENDING
+                job.error_message = error
+                job.error_details = {"error": error, "retry": job.retry_count}
+                doc.status = DocumentStatus.UPLOADED
+                logger.warning(
+                    "Job %s failed (retry %d/%d): %s",
+                    job.id,
+                    job.retry_count,
+                    self.max_retries,
+                    error,
+                )
+            else:
+                job.status = ProcessingJobStatus.FAILED
+                job.error_message = error
+                job.error_details = {"error": error, "max_retries_exceeded": True}
+                doc.status = DocumentStatus.FAILED
+                doc.processing_error = error
+                logger.error(
+                    "Job %s failed permanently after %d retries: %s",
+                    job.id,
+                    self.max_retries,
+                    error,
+                )
+            job.completed_at = datetime.now(UTC)
 
 
 async def main():

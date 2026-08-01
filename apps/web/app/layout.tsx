@@ -6,6 +6,11 @@ export const metadata: Metadata = {
   description:
     "AI-powered study assistant that generates exam-ready answers using your college's approved study materials. Grounded in facts, structured by marks.",
   keywords: ["study", "AI", "exam", "answers", "college", "RAG", "VibeGPT"],
+  icons: {
+    icon: "/logo.png?v=20260731",
+    shortcut: "/logo.png?v=20260731",
+    apple: "/logo.png?v=20260731",
+  },
 };
 
 export const viewport: Viewport = {

@@ -45,6 +45,15 @@ class ValidationResult(BaseModel):
     details: dict | None = None
 
 
+class DrawingAttachment(BaseModel):
+    drawing_id: str
+    title: str
+    svg: str
+    spec: dict
+    warnings: list[str] = []
+    engine: str = "GraphicsPythonVibeGPT"
+
+
 class AnswerResponse(BaseModel):
     id: UUID
     status: str
@@ -58,6 +67,7 @@ class AnswerResponse(BaseModel):
     model: str | None = None
     processing_ms: int | None = None
     validation: ValidationResult | None = None
+    drawing: DrawingAttachment | None = None
     session_id: UUID | None = None
     created_at: datetime
 
@@ -92,6 +102,7 @@ class SessionMessage(BaseModel):
     subject_name: str | None = None
     module_name: str | None = None
     sources: list[SourceInfo] = []
+    drawing: DrawingAttachment | None = None
     feedback_rating: int | None = None
     feedback_comment: str | None = None
     created_at: datetime

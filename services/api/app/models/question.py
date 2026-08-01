@@ -95,6 +95,7 @@ class QuestionLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     validation_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    drawing_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     user: Mapped[User] = relationship(back_populates="question_logs")
