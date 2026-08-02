@@ -119,12 +119,6 @@ export function HeroVJEC() {
                   Open VibeGPT
                   <ChevronRight size={18} className="transition-transform group-hover:translate-x-1" />
                 </Link>
-                <a
-                  href="#pipeline-act"
-                  className="inline-flex items-center gap-2 rounded-xl border border-[var(--color-line)] px-6 py-3.5 text-[15px] font-semibold text-[var(--color-muted)] transition-all hover:border-[rgba(229,9,20,0.4)] hover:text-[var(--color-fg)]"
-                >
-                  See how it works
-                </a>
               </div>
 
               <div className="flex flex-col gap-4 md:hidden">

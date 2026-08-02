@@ -15,15 +15,6 @@ const RECENT_UPDATES = [
   { tag: "improved", text: "Citations you can open and verify" },
 ];
 
-const FEATURES = [
-  { title: "Grounded answers", desc: "Every answer is drawn from your campus's uploaded material and cited to the page.", big: true },
-  { title: "Marks-aware depth", desc: "A 2-mark answer stays short; a 10-mark answer goes deep." },
-  { title: "Source citations", desc: "Open any citation to see the exact page, slide or sheet." },
-  { title: "Subject modules", desc: "Material organized by subject and module, the way you study." },
-  { title: "Chat history", desc: "Pick up where you left off — sessions are saved." },
-  { title: "Admin analytics", desc: "Live usage, tokens and ratings for the campus." },
-];
-
 export function MetricsAct() {
   const reduced = useReducedMotion();
   const [stats, setStats] = useState<ApiPublicStats | null>(null);
@@ -51,7 +42,7 @@ export function MetricsAct() {
 
       <div className="mx-auto w-full max-w-6xl">
         <Reveal>
-          <ActMarker num="06" title="Live status" />
+          <ActMarker num="02" title="Live status" />
         </Reveal>
 
         <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-16">
@@ -179,31 +170,6 @@ export function MetricsAct() {
                 </div>
               </div>
             </Reveal>
-          </div>
-        </div>
-
-        {/* Feature breakdown — varied grid, not uniform cards */}
-        <div className="mt-20">
-          <Reveal>
-            <span className="mono-label text-[var(--color-faint)]">what it does</span>
-          </Reveal>
-          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {FEATURES.map((f, i) => (
-              <Reveal
-                key={f.title}
-                delay={0.05 + i * 0.06}
-                className={f.big ? "sm:col-span-2 lg:col-span-1" : ""}
-              >
-                <div className="group card h-full !p-6 transition-colors duration-200 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(229,9,20,0.4)]">
-                  <h3 className="text-[16px] font-bold text-[var(--color-fg)] transition-colors group-hover:text-[var(--color-brand-accent)]">
-                    {f.title}
-                  </h3>
-                  <p className="mt-2 text-[13.5px] leading-relaxed text-[var(--color-muted)]">
-                    {f.desc}
-                  </p>
-                </div>
-              </Reveal>
-            ))}
           </div>
         </div>
       </div>
