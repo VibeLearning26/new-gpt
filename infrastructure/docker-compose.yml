@@ -129,8 +129,6 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
-      graphics:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)"]
       interval: 15s
@@ -142,8 +140,17 @@ services:
 
   # Deterministic engineering-graphics renderer. It receives only the
   # subject-scoped excerpts selected by the authenticated VibeGPT API.
+  #
+  # OPTIONAL — builds from the sibling GraphicsPythonVibeGPT repo, which must
+  # be cloned next to this repo (../../GraphicsPythonVibeGPT/backend). It is
+  # profile-gated so a plain `docker compose up` works without it; once the
+  # repo is cloned, enable it with:
+  #     docker compose --profile graphics up -d --build
+  # The API degrades gracefully to text-only answers when this is not running,
+  # so the rest of the stack never depends on it.
   graphics:
     <<: *hardened
+    profiles: ["graphics"]
     build:
       context: ../../GraphicsPythonVibeGPT/backend
       dockerfile: Dockerfile
