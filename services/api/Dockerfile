@@ -1,5 +1,5 @@
 # ── Build stage ───────────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /build
 COPY requirements.txt .
@@ -11,7 +11,7 @@ RUN pip install --default-timeout=1000 --no-cache-dir --prefix=/install torch --
 RUN pip install --default-timeout=1000 --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Runtime stage ────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 ENV PYTHONPATH=/app
