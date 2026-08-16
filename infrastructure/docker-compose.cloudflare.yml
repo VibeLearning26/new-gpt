@@ -1,0 +1,53 @@
+# VibeGPT – Cloudflare origin overlay.
+#
+# Layered on top of the Oracle deployment:
+#   docker compose --env-file ../.env \
+#     -f docker-compose.oracle.yml -f docker-compose.cloudflare.yml up -d
+#
+# What this changes:
+#   - Caddy serves ONLY the token-protected API origin (Caddyfile.cloudflare)
+#     instead of the public site — the frontend moves to Cloudflare Pages.
+#   - Adds a cloudflared connector so the VPS needs NO open ingress ports:
+#     Cloudflare reaches the origin through an outbound-only tunnel.
+#
+# Required in ../.env (see oracle.env.example):
+#   ORIGIN_DOMAIN, ORIGIN_TOKEN, CLOUDFLARE_TUNNEL_TOKEN
+#
+# Rollback: redeploy with docker-compose.oracle.yml alone (the public
+# Caddyfile and web container are untouched in the base file).
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # Same reverse proxy container, now serving only the token-gated API
+  # origin for tunnel traffic. The bind mount for /etc/caddy/Caddyfile
+  # overrides the base file (Compose merges volumes by target path).
+  caddy:
+    volumes:
+      - ./Caddyfile.cloudflare:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      ORIGIN_DOMAIN: ${ORIGIN_DOMAIN:?Set ORIGIN_DOMAIN in .env}
+      ORIGIN_TOKEN: ${ORIGIN_TOKEN:?Set ORIGIN_TOKEN in .env}
+
+  # Outbound-only connector to Cloudflare. The tunnel and its public
+  # hostname mapping (ORIGIN_DOMAIN → http://caddy:80) are configured in
+  # the Zero Trust dashboard, which issues the token below.
+  cloudflared:
+    <<: *hardened
+    image: cloudflare/cloudflared:latest
+    container_name: vibegpt-cloudflared
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    pids_limit: 64
+    mem_limit: 128m

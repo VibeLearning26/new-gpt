@@ -1,0 +1,4 @@
+# Local development values for `wrangler dev` (copied to .dev-vars).
+# NEVER commit the real .dev-vars file.
+ORIGIN_URL=http://127.0.0.1:8000
+ORIGIN_TOKEN=dev-only-shared-secret

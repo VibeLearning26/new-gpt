@@ -1,0 +1,57 @@
+# VibeGPT – Origin configuration (Cloudflare Tunnel ingress).
+#
+# This file replaces the public Caddyfile when the stack runs behind a
+# Cloudflare Tunnel (docker-compose.cloudflare.yml). The tunnel terminates
+# TLS at the Cloudflare edge and forwards plain HTTP to this Caddy, which:
+#
+#   - serves ONLY /api/* — the web frontend lives on Cloudflare Pages,
+#   - rejects any request lacking the shared X-Origin-Token injected by
+#     the Worker gateway, so nobody who discovers the tunnel hostname can
+#     bypass the gateway and hit FastAPI directly,
+#   - keeps the long read/write timeouts the RAG pipeline needs.
+#
+# Required environment (set in ../.env on the VPS):
+#   ORIGIN_DOMAIN – hostname routed through the tunnel, e.g. origin.example.com
+#   ORIGIN_TOKEN  – shared secret, identical to the Worker's ORIGIN_TOKEN secret
+#
+# The explicit http:// scheme is intentional: TLS is handled by Cloudflare,
+# so Caddy never needs (or attempts) a certificate for this hostname.
+
+http://{$ORIGIN_DOMAIN:origin.internal} {
+	# Everything without the gateway's shared token is rejected up front.
+	@no_token not header X-Origin-Token {$ORIGIN_TOKEN}
+	respond @no_token 403
+
+	encode zstd gzip
+
+	# Mirror the gateway/backend upload cap (20 MB + multipart headroom).
+	request_body {
+		max_size 30MB
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000 {
+			transport http {
+				# LLM answer generation can take minutes.
+				read_timeout 300s
+				write_timeout 300s
+			}
+		}
+	}
+
+	# The web frontend is hosted on Cloudflare Pages — nothing else here.
+	respond 404
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		-Server
+	}
+
+	log {
+		output file /data/origin-access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

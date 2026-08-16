@@ -1,0 +1,44 @@
+// VibeGPT – Cloudflare Worker gateway configuration.
+//
+// Deploy steps (full runbook: ../DEPLOYMENT.md):
+//   npm install
+//   npx wrangler login
+//   npx wrangler secret put ORIGIN_TOKEN     # must match ORIGIN_TOKEN on the VPS
+//   npx wrangler deploy
+//   # then attach the route  YOUR_DOMAIN/api/*  to this Worker (dashboard →
+//   # Workers routes, or the "routes" stanza below with your zone id).
+
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vibegpt-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  // Edge rate limiting (per bearer token, else per client IP). Free-tier
+  // friendly; the binding fails open in the Worker if unavailable.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      // Any unique integer per account; Workers sharing an id share counters.
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+
+  // ORIGIN_URL points at the tunnel hostname that fronts the FastAPI origin,
+  // e.g. https://origin.vibegpt.example.com — reachable only through
+  // Cloudflare and only with the ORIGIN_TOKEN secret. Keep ORIGIN_TOKEN out
+  // of this file; set it with `wrangler secret put ORIGIN_TOKEN`.
+  "vars": {
+    "ORIGIN_URL": "https://REPLACE_WITH_YOUR_ORIGIN_HOSTNAME",
+    "MAX_BODY_MB": "25"
+    // Cross-origin fallback mode only (pages.dev → workers.dev):
+    // "ALLOWED_ORIGINS": "https://vibegpt.pages.dev",
+    // "FORCE_SAMESITE_NONE": "true"
+  },
+
+  "observability": { "enabled": true }
+
+  // Attach the gateway to your zone (uncomment and fill in the domain):
+  // "routes": [{ "pattern": "vibegpt.yourdomain.com/api/*", "zone_id": "YOUR_ZONE_ID" }]
+}

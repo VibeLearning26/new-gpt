@@ -1,0 +1,13 @@
+# VibeGPT – Cloudflare Pages response headers.
+# Served with the static export from apps/web/public (copied into out/).
+# API responses carry their own headers via the Worker gateway.
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# Immutable, content-hashed build assets.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
