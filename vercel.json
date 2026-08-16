@@ -9,7 +9,7 @@
   "rewrites": [
     {
       "source": "/api/v1/:path*",
-      "destination": "https://REPLACE-WITH-YOUR-BACKEND-HOST/api/v1/:path*"
+      "destination": "https://fixes-denied-attorneys-fda.trycloudflare.com/api/v1/:path*"
     },
     {
       "source": "/",

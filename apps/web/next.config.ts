@@ -36,9 +36,12 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["reicon-react"],
   },
-  // Environment variables accessible at build time
+  // Environment variables accessible at build time. On Vercel the default is
+  // the same-origin proxy (vercel.json rewrites /api/v1/* to the backend), so
+  // no dashboard env var is required; local dev overrides via .env.development
+  // and Docker passes its own build arg.
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "/api/v1",
   },
 };
 
