@@ -7,15 +7,21 @@ import type { NextConfig } from "next";
 // standalone build are unaffected.
 const isCloudflarePages = process.env.CF_PAGES === "1";
 
+// Vercel sets VERCEL=1 during its build. In the multi-service deployment the
+// /_next/image optimizer route is not reachable, so images are served as-is
+// from /public (which works — verified 200 on the deployed assets).
+const isVercel = process.env.VERCEL === "1";
+
 const nextConfig: NextConfig = {
   output: isCloudflarePages ? "export" : "standalone",
   turbopack: {
     root: process.cwd(),
   },
   images: {
-    // Static export has no Node server for the image optimizer, so images
-    // ship as-is on Pages (Docker/standalone keeps optimizing).
-    unoptimized: isCloudflarePages,
+    // Static export has no Node server for the image optimizer, and the
+    // Vercel service routing can't reach /_next/image — ship images as-is
+    // there (local dev and Docker/standalone keep optimizing).
+    unoptimized: isCloudflarePages || isVercel,
     // Team photos use a ?v=N cache-busting query string (see app/team/page.tsx).
     // Allowing query strings turns localPatterns into a whitelist, so EVERY
     // local image used via next/image must be listed here — add new ones if you
