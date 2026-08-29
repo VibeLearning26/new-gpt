@@ -29,7 +29,7 @@ dependencies:
   # UI
   flutter_markdown: ^0.7.7
   google_fonts: ^6.2.1
-  shimmer: ^3.0.0
+  shimmer: ^4.0.0
 
   # Utilities
   intl: ^0.20.2
